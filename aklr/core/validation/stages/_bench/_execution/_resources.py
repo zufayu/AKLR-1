@@ -12,7 +12,6 @@ import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Protocol
 
 from aklr.core.validation.stages._bench._execution._model import (
     ResourceCapabilities,
@@ -21,13 +20,6 @@ from aklr.core.validation.stages._bench._execution._model import (
     ResourceSnapshot,
     ResourceState,
 )
-
-
-class ExecutionResource(Protocol):
-    resource_id: str
-    device: str
-    capabilities: ResourceCapabilities
-    state: ResourceState
 
 
 @dataclass
@@ -55,20 +47,18 @@ class AcceleratorResource:
 class ResourceLease:
     lease_id: str
     task_id: str
-    resource: ExecutionResource
+    resource: ResourceSnapshot
 
 
 class ResourceCatalog(ABC):
     """Owns the resources and leases each to one task at a time."""
 
     @abstractmethod
-    def resources(self) -> Sequence[AcceleratorResource]: ...
+    def __len__(self) -> int: ...
 
     @abstractmethod
-    def matching(self, request: ResourceRequest) -> Sequence[ResourceSnapshot]: ...
-
-    @abstractmethod
-    def available(self, request: ResourceRequest) -> Sequence[ResourceSnapshot]: ...
+    def matching(self, request: ResourceRequest) -> Sequence[ResourceSnapshot]:
+        """Snapshot healthy matching resources, including those already leased."""
 
     @abstractmethod
     def acquire(self, resource_id: str, task_id: str) -> ResourceLease | None: ...
@@ -94,23 +84,16 @@ class LocalAcceleratorCatalog(ResourceCatalog):
         self._lease_id_by_resource: dict[str, str] = {}
         self._lock = threading.Lock()
 
-    def resources(self) -> Sequence[AcceleratorResource]:
-        with self._lock:
-            return tuple(self._resources.values())
+    def __len__(self) -> int:
+        return len(self._resources)
 
     def matching(self, request: ResourceRequest) -> Sequence[ResourceSnapshot]:
         with self._lock:
             return tuple(
                 resource.snapshot()
                 for resource in self._resources.values()
-                if resource.matches(request)
-                and resource.state not in {ResourceState.UNHEALTHY, ResourceState.QUARANTINED}
+                if resource.matches(request) and resource.state != ResourceState.UNHEALTHY
             )
-
-    def available(self, request: ResourceRequest) -> Sequence[ResourceSnapshot]:
-        return tuple(
-            snapshot for snapshot in self.matching(request) if snapshot.state == ResourceState.AVAILABLE
-        )
 
     def acquire(self, resource_id: str, task_id: str) -> ResourceLease | None:
         with self._lock:
@@ -121,7 +104,7 @@ class LocalAcceleratorCatalog(ResourceCatalog):
             lease = ResourceLease(
                 lease_id=uuid.uuid4().hex,
                 task_id=task_id,
-                resource=resource,
+                resource=resource.snapshot(),
             )
             self._lease_id_by_resource[resource_id] = lease.lease_id
             return lease

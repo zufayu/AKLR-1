@@ -9,9 +9,9 @@ from __future__ import annotations
 import dataclasses
 import threading
 from abc import ABC, abstractmethod
-from collections import deque
+from collections import OrderedDict
 from collections.abc import Callable, Sequence
-from typing import Any, Final
+from typing import Any
 
 from aklr.core.validation.stages._bench._execution._errors import (
     NoResourceAvailable,
@@ -22,13 +22,12 @@ from aklr.core.validation.stages._bench._execution._model import (
     ExecutionTask,
     ResourceHealth,
     ResourceSnapshot,
+    ResourceState,
 )
 from aklr.core.validation.stages._bench._execution._resources import (
     ResourceCatalog,
     ResourceLease,
 )
-
-DRAIN_TIMEOUT_SECONDS: Final = 300.0  # how long shutdown waits for in-flight tasks to report back
 
 Dispatch = Callable[[ExecutionTask, ExecutionFuture[Any], ResourceLease], None]
 Assignment = tuple[ExecutionTask, ExecutionFuture[Any], ResourceLease]
@@ -76,8 +75,7 @@ class ExecutionScheduler:
         self._resources = resources
         self._strategy = strategy
         self._dispatch = dispatch
-        self._pending: deque[tuple[ExecutionTask, ExecutionFuture[Any]]] = deque()
-        self._active: dict[str, ResourceLease] = {}
+        self._pending: OrderedDict[str, tuple[ExecutionTask, ExecutionFuture[Any]]] = OrderedDict()
         self._known_task_ids: set[str] = set()
         self._accepting = True
         self._condition = threading.Condition()
@@ -103,7 +101,7 @@ class ExecutionScheduler:
                 )
                 return future
             self._known_task_ids.add(task.task_id)
-            self._pending.append((task, future))
+            self._pending[task.task_id] = (task, future)
             self._condition.notify_all()
         return future
 
@@ -118,12 +116,11 @@ class ExecutionScheduler:
             ):
                 return False
             self._known_task_ids.add(task.task_id)
-            self._pending.appendleft(
-                (
-                    dataclasses.replace(task, n_start_attempts=task.n_start_attempts + 1),
-                    future,
-                )
+            self._pending[task.task_id] = (
+                dataclasses.replace(task, n_start_attempts=task.n_start_attempts + 1),
+                future,
             )
+            self._pending.move_to_end(task.task_id, last=False)
             self._condition.notify_all()
         return True
 
@@ -132,14 +129,13 @@ class ExecutionScheduler:
             self._resources.release(lease, health)
         finally:
             with self._condition:
-                self._active.pop(lease.task_id, None)
                 self._known_task_ids.discard(lease.task_id)
                 self._condition.notify_all()
 
     def cancel_pending(self) -> int:
         cancelled = 0
         with self._condition:
-            pending = tuple(self._pending)
+            pending = tuple(self._pending.values())
             self._pending.clear()
             for task, _ in pending:
                 self._known_task_ids.discard(task.task_id)
@@ -149,97 +145,69 @@ class ExecutionScheduler:
                 cancelled += 1
         return cancelled
 
-    def shutdown(self, wait: bool = True, timeout: float = DRAIN_TIMEOUT_SECONDS) -> None:
+    def shutdown(self) -> None:
+        """Stop dispatching and cancel queued work; the supervisor owns running tasks."""
         with self._condition:
             self._accepting = False
-            pending = tuple(self._pending)
-            self._pending.clear()
-            for task, _ in pending:
-                self._known_task_ids.discard(task.task_id)
             self._condition.notify_all()
-        for _, future in pending:
-            future.cancel()
-        if wait:
-            with self._condition:
-                is_drained = self._condition.wait_for(lambda: not self._active, timeout)
-            if not is_drained:
-                with self._condition:
-                    stranded = tuple(self._active.values())
-                    self._active.clear()
-                    for lease in stranded:
-                        self._known_task_ids.discard(lease.task_id)
-                    self._condition.notify_all()
-                for lease in stranded:
-                    try:
-                        self._resources.release(lease, ResourceHealth.UNHEALTHY)
-                    except Exception:  # noqa: BLE001, S110
-                        pass
-        with self._condition:
-            self._condition.notify_all()
-        self._coordinator.join(timeout)
+        self.cancel_pending()
+        self._coordinator.join()
 
     def _coordinate(self) -> None:
-        try:
-            while True:
-                assignment = None
-                rejection = None
-                with self._condition:
-                    while assignment is None and rejection is None:
-                        for pending_task, pending_future in self._pending:
-                            if pending_future.cancelled():
-                                self._known_task_ids.discard(pending_task.task_id)
-                        self._pending = deque(
-                            (pending_task, pending_future)
-                            for pending_task, pending_future in self._pending
-                            if not pending_future.cancelled()
-                        )
-                        if not self._accepting and not self._pending:
-                            return
-                        assignment, rejection = self._next_decision()
-                        if assignment is None and rejection is None:
-                            self._condition.wait()
-
-                if rejection is not None:
-                    future, error = rejection
-                    future.publish_exception(error)
-                    continue
-
-                task, future, lease = assignment
-                try:
-                    self._dispatch(task, future, lease)
-                except BaseException as error:  # noqa: BLE001
-                    self.complete(lease, ResourceHealth.HEALTHY)
-                    future.publish_exception(SubmissionRejected(str(error)))
-        finally:
+        while True:
+            assignment = None
+            rejection = None
             with self._condition:
-                self._condition.notify_all()
+                while assignment is None and rejection is None:
+                    if not self._accepting:
+                        return
+                    assignment, rejection = self._next_decision()
+                    if assignment is None and rejection is None:
+                        self._condition.wait()
+
+            if rejection is not None:
+                future, error = rejection
+                future.publish_exception(error)
+                continue
+
+            task, future, lease = assignment
+            try:
+                self._dispatch(task, future, lease)
+            except BaseException as error:  # noqa: BLE001
+                self.complete(lease, ResourceHealth.HEALTHY)
+                future.publish_exception(SubmissionRejected(str(error)))
 
     def _next_decision(
         self,
     ) -> tuple[Assignment | None, Rejection | None]:
-        for task, future in tuple(self._pending):
+        for task, future in tuple(self._pending.values()):
+            if future.cancelled():
+                self._pending.pop(task.task_id)
+                self._known_task_ids.discard(task.task_id)
+                continue
             lease = None
             try:
-                if not self._resources.matching(task.resource_request):
-                    self._discard(future)
+                matching = self._resources.matching(task.resource_request)
+                if not matching:
+                    self._pending.pop(task.task_id)
                     self._known_task_ids.discard(task.task_id)
                     return None, (
                         future,
                         NoResourceAvailable(f"no healthy execution resource satisfies task {task.task_id}"),
                     )
-                candidates = self._resources.available(task.resource_request)
+                candidates = [resource for resource in matching if resource.state == ResourceState.AVAILABLE]
                 selected = self._strategy.choose(task, candidates)
                 if selected is None:
                     continue
                 lease = self._resources.acquire(selected.resource_id, task.task_id)
                 if lease is None:
                     continue
-                self._discard(future)
                 if not future.assign(selected.resource_id, selected.device):
                     self._resources.release(lease, ResourceHealth.HEALTHY)
+                    self._pending.pop(task.task_id)
                     self._known_task_ids.discard(task.task_id)
                     continue
-                self._active[task.task_id] = lease
+                self._pending.pop(task.task_id)
                 return (task, future, lease), None
             except Exception as error:  # noqa: BLE001
                 if lease is not None:
@@ -247,7 +215,7 @@ class ExecutionScheduler:
                         self._resources.release(lease, ResourceHealth.UNHEALTHY)
                     except Exception:  # noqa: BLE001, S110
                         pass
-                self._discard(future)
+                self._pending.pop(task.task_id)
                 self._known_task_ids.discard(task.task_id)
                 return None, (
                     future,
@@ -256,6 +224,3 @@ class ExecutionScheduler:
                     ),
                 )
         return None, None
-
-    def _discard(self, discarded: ExecutionFuture[Any]) -> None:
-        self._pending = deque((task, future) for task, future in self._pending if future is not discarded)

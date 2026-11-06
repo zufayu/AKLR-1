@@ -18,25 +18,28 @@ class ShutdownGate:
         self._complete = threading.Event()
         self._error: BaseException | None = None
         self._owner_thread_id: int | None = None
+        self._started = False
+        self._lock = threading.Lock()
 
-    def start(self, run_shutdown: Callable[[], None], wait: bool) -> None:
-        if wait:
-            self._run(run_shutdown)
-            return
-        threading.Thread(
-            target=self._run,
-            args=(run_shutdown,),
-            name=self._thread_name,
-            daemon=True,
-        ).start()
-
-    def wait_until_complete(self) -> None:
+    def run(self, run_shutdown: Callable[[], None], *, wait: bool = True) -> None:
+        with self._lock:
+            initiate = not self._started
+            self._started = True
+        if initiate:
+            if wait:
+                self._run(run_shutdown)
+            else:
+                threading.Thread(
+                    target=self._run,
+                    args=(run_shutdown,),
+                    name=self._thread_name,
+                    daemon=True,
+                ).start()
         # called from the body's own thread: waiting here would never end
-        if self._owner_thread_id == threading.get_ident():
-            return
-        self._complete.wait()
-        if self._error is not None:
-            raise self._error
+        if wait and self._owner_thread_id != threading.get_ident():
+            self._complete.wait()
+            if self._error is not None:
+                raise self._error
 
     def _run(self, run_shutdown: Callable[[], None]) -> None:
         self._owner_thread_id = threading.get_ident()

@@ -41,7 +41,6 @@ class ResourceState(str, Enum):
     AVAILABLE = "available"
     LEASED = "leased"
     UNHEALTHY = "unhealthy"
-    QUARANTINED = "quarantined"
 
 
 class ResourceHealth(str, Enum):

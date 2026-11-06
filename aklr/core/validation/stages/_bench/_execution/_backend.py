@@ -17,7 +17,6 @@ from aklr.core.validation.stages._bench._execution._engine import ExecutionEngin
 from aklr.core.validation.stages._bench._execution._errors import (
     ExecutionError,
     RunnerStartupFailed,
-    SubmissionRejected,
     TaskCancelled,
 )
 from aklr.core.validation.stages._bench._execution._future import ExecutionFuture
@@ -31,7 +30,6 @@ from aklr.core.validation.stages._bench._execution._resources import (
     ResourceLease,
 )
 from aklr.core.validation.stages._bench._execution._runner import (
-    DisposableExecutionRunner,
     ExecutionRunner,
     RunnerFactory,
 )
@@ -55,6 +53,8 @@ class ExecutionBackend(ABC):
 
 
 class RunnerSupervisor:
+    """Owns runner lifetimes and resolves tasks only after cleanup and resource release."""
+
     def __init__(
         self,
         runner_factory: RunnerFactory,
@@ -83,18 +83,17 @@ class RunnerSupervisor:
     ) -> None:
         self._pool.submit(self._run, task, future, lease)
 
-    def shutdown(self, wait: bool = True) -> None:
-        if not wait:
-            with self._lock:
-                self._is_closing = True
-                runners = tuple(self._active.values())
-            for runner in runners:
-                try:
-                    runner.close()
-                except Exception:  # noqa: BLE001, S110
-                    # the runner's own pool thread reads its health and reports it
-                    pass
-        self._pool.shutdown(wait=wait, cancel_futures=False)
+    def shutdown(self) -> None:
+        with self._lock:
+            self._is_closing = True
+            runners = tuple(self._active.values())
+        for runner in runners:
+            try:
+                runner.close()
+            except Exception:  # noqa: BLE001, S110
+                # the runner's own pool thread reads its health and reports it
+                pass
+        self._pool.shutdown(wait=True)
 
     def _run(
         self,
@@ -115,8 +114,7 @@ class RunnerSupervisor:
         runner_health = RunnerHealth.HEALTHY
         try:
             runner = self._runner_factory.create(lease, self._engine)
-            if isinstance(runner, DisposableExecutionRunner):
-                directory = runner.directory
+            directory = runner.directory
             with self._lock:
                 if self._is_closing:
                     raise TaskCancelled(f"task {task.task_id} was cancelled: the backend is closing")
@@ -129,7 +127,7 @@ class RunnerSupervisor:
             # marked running only once started: a start failure may retry the task elsewhere
             if future.mark_running(directory):
                 try:
-                    result = runner.submit(task).result(timeout=task.timeout_seconds)
+                    result = runner.execute(task)
                     is_returned = True
                 except BaseException as error:  # noqa: BLE001
                     failure = self._as_execution_error(
@@ -209,6 +207,8 @@ class RunnerSupervisor:
 
 
 class SubprocessExecutionBackend(ExecutionBackend):
+    """Connects the scheduler to runner supervision and closes them in dependency order."""
+
     def __init__(
         self,
         resources: ResourceCatalog,
@@ -224,45 +224,28 @@ class SubprocessExecutionBackend(ExecutionBackend):
             engine=engine,
             on_finished=lambda lease, health: self._scheduler.complete(lease, health),
             retry=lambda task, future: self._scheduler.retry(task, future),
-            max_concurrency=max_concurrency or len(resources.resources()),
+            max_concurrency=max_concurrency or len(resources),
         )
         self._scheduler = ExecutionScheduler(
             resources=resources,
             strategy=strategy or RoundRobinStrategy(),
             dispatch=self._supervisor.dispatch,
         )
-        self._shutdown_lock = threading.Lock()
-        self._is_shutdown = False
         self._shutdown_gate = ShutdownGate("aklr-execution-backend-shutdown")
 
     def submit(self, task: ExecutionTask) -> ExecutionFuture[Any]:
-        with self._shutdown_lock:
-            if self._is_shutdown:
-                future: ExecutionFuture[Any] = ExecutionFuture(task.task_id)
-                future.set_exception(SubmissionRejected("execution backend is closed"))
-                return future
-            return self._scheduler.submit(task)
+        return self._scheduler.submit(task)
 
     def cancel_pending(self) -> int:
         return self._scheduler.cancel_pending()
 
     def shutdown(self, wait: bool = True) -> None:
-        initiate_shutdown = False
-        with self._shutdown_lock:
-            if not self._is_shutdown:
-                self._is_shutdown = True
-                initiate_shutdown = True
+        # Stop accepting work before returning, including when cleanup runs in the background.
+        self._scheduler.shutdown()
+        self._shutdown_gate.run(self._close_supervisor, wait=wait)
 
-        if initiate_shutdown:
-            self._shutdown_gate.start(self._close_scheduler_and_supervisor, wait=wait)
-        if wait:
-            self._shutdown_gate.wait_until_complete()
-
-    def _close_scheduler_and_supervisor(self) -> None:
+    def _close_supervisor(self) -> None:
         try:
-            # stop dispatching, then kill the running children, then wait for their threads
-            self._scheduler.shutdown(wait=False)
-            self._supervisor.shutdown(wait=False)
-            self._supervisor.shutdown(wait=True)
+            self._supervisor.shutdown()
         finally:
             self._runner_factory.close()

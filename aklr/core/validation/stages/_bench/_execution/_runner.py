@@ -12,7 +12,6 @@ import multiprocessing
 import multiprocessing.connection
 import os
 import shutil
-import signal
 import sys
 import tempfile
 import threading
@@ -20,7 +19,6 @@ import time
 import traceback
 import uuid
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
@@ -37,14 +35,15 @@ from aklr.core.validation.stages._bench._execution._errors import (
     TaskExecutionTimeout,
 )
 from aklr.core.validation.stages._bench._execution._model import (
+    ExecutionContext,
     ExecutionTask,
     RunnerHealth,
     RunnerState,
 )
 from aklr.core.validation.stages._bench._execution._resources import ResourceLease
+from aklr.core.validation.stages._bench._execution._shutdown import ShutdownGate
 from aklr.core.validation.stages._bench._execution._task_log import TaskLog
 from aklr.core.validation.stages._bench._execution._transport import (
-    CancelTask,
     ChannelReceiveTimeout,
     ChildRunnerEndpoint,
     ExecuteTask,
@@ -64,16 +63,9 @@ RUNNER_POLL_SECONDS: Final = 0.25
 RUNNER_JOIN_SECONDS: Final = 2.0
 
 
-@dataclass(frozen=True)
-class RunnerInvocation:
-    runner: ExecutionRunner
-    task_id: str
-
-    def result(self, timeout: float | None = None) -> Any:
-        return self.runner.result(self.task_id, timeout)
-
-
 class ExecutionRunner(ABC):
+    """Starts a leased task, executes it synchronously, and closes its process."""
+
     @property
     @abstractmethod
     def runner_id(self) -> str: ...
@@ -82,23 +74,22 @@ class ExecutionRunner(ABC):
     @abstractmethod
     def state(self) -> RunnerState: ...
 
+    @property
+    @abstractmethod
+    def directory(self) -> Path: ...
+
     @abstractmethod
     def start(self) -> None: ...
 
     @abstractmethod
-    def submit(self, task: ExecutionTask) -> RunnerInvocation: ...
-
-    @abstractmethod
-    def result(self, task_id: str, timeout: float | None = None) -> Any: ...
-
-    @abstractmethod
-    def cancel(self, task_id: str) -> bool: ...
+    def execute(self, task: ExecutionTask) -> Any: ...
 
     @abstractmethod
     def health(self) -> RunnerHealth: ...
 
     @abstractmethod
-    def close(self) -> None: ...
+    def close(self) -> None:
+        """Reap the process; concurrent callers must all wait until cleanup finishes."""
 
     def diagnostics(self) -> str | None:
         return None
@@ -126,9 +117,7 @@ class DisposableExecutionRunner(ExecutionRunner):
         self._state_lock = threading.Lock()
         self._process: Any | None = None
         self._channel: MultiprocessingRunnerChannel | None = None
-        self._submitted_task_id: str | None = None
-        self._cancelled_task_id: str | None = None
-        self._has_read_diagnostics = False
+        self._shutdown_gate = ShutdownGate("aklr-execution-runner-shutdown")
 
     @property
     def runner_id(self) -> str:
@@ -144,8 +133,10 @@ class DisposableExecutionRunner(ExecutionRunner):
         return self._directory
 
     def start(self) -> None:
-        self._require_state(RunnerState.CREATED)
-        self._set_state(RunnerState.STARTING)
+        with self._state_lock:
+            if self._state != RunnerState.CREATED:
+                raise InvalidRunnerState(f"runner {self._runner_id} is {self._state.value}, expected created")
+            self._state = RunnerState.STARTING
 
         if self._lease.resource.device != "cpu":
             from aklr.core.utils.testing import kernel_tracer
@@ -166,10 +157,15 @@ class DisposableExecutionRunner(ExecutionRunner):
             ),
             daemon=False,
         )
-        self._channel = channel
-        self._process = process
         try:
-            process.start()
+            # close() must either see this process or prevent it from being spawned.
+            with self._state_lock:
+                if self._state != RunnerState.STARTING:
+                    channel.close()
+                    raise TaskCancelled(f"runner {self._runner_id} was closed while starting")
+                self._channel = channel
+                self._process = process
+                process.start()
             child_endpoint.close()
             event = self._receive_event(self._startup_timeout_seconds)
             if isinstance(event, RunnerFailed) and event.runner_id == self._runner_id:
@@ -213,36 +209,26 @@ class DisposableExecutionRunner(ExecutionRunner):
             raise RunnerStartupFailed(
                 f"runner {self._runner_id} could not start: {type(error).__name__}: {error}"
             ) from error
+        finally:
+            child_endpoint.close()
 
-    def submit(self, task: ExecutionTask) -> RunnerInvocation:
-        self._require_state(RunnerState.READY)
+    def execute(self, task: ExecutionTask) -> Any:
+        """Run the leased task and wait for its reply within the task's execution budget."""
+        task_id = task.task_id
         if task.task_id != self._lease.task_id:
             raise InvalidRunnerState(f"task {task.task_id} does not own lease {self._lease.lease_id}")
-        if self._submitted_task_id is not None:
-            raise InvalidRunnerState(f"runner {self._runner_id} accepts only one task")
-
-        self._submitted_task_id = task.task_id
-        self._require_channel().send(
-            ExecuteTask(
-                runner_id=self._runner_id,
-                task_id=task.task_id,
-                task=task,
-            )
-        )
-        self._set_state(RunnerState.RUNNING)
-        return RunnerInvocation(runner=self, task_id=task.task_id)
-
-    def result(self, task_id: str, timeout: float | None = None) -> Any:
-        if task_id != self._submitted_task_id:
-            raise InvalidRunnerState(f"runner {self._runner_id} does not own task {task_id}")
-        if task_id == self._cancelled_task_id:
-            raise TaskCancelled(f"task {task_id} was cancelled")
-        self._require_state(RunnerState.RUNNING)
+        with self._state_lock:
+            if self._state == RunnerState.CLOSED:
+                raise TaskCancelled(f"task {task_id} was cancelled")
+            if self._state != RunnerState.READY:
+                raise InvalidRunnerState(f"runner {self._runner_id} is {self._state.value}, expected ready")
+            self._require_channel().send(ExecuteTask(runner_id=self._runner_id, task=task))
+            self._state = RunnerState.RUNNING
 
         try:
-            event = self._receive_event(timeout)
+            event = self._receive_event(task.timeout_seconds)
         except (TaskExecutionTimeout, RunnerExitedEarly, ChannelFailure) as error:
-            if self.state == RunnerState.CLOSED or task_id == self._cancelled_task_id:
+            if self.state == RunnerState.CLOSED:
                 raise TaskCancelled(f"task {task_id} was cancelled") from error
             self._set_state(RunnerState.FAILED)
             self._set_health(RunnerHealth.FAILED)
@@ -269,33 +255,15 @@ class DisposableExecutionRunner(ExecutionRunner):
             raise RunnerCrashed(f"runner {self._runner_id} exited before task {task_id} completed")
         raise RunnerCrashed(f"runner {self._runner_id} sent an invalid event for task {task_id}: {event}")
 
-    def cancel(self, task_id: str) -> bool:
-        if task_id != self._submitted_task_id or self.state != RunnerState.RUNNING:
-            return False
-        self._cancelled_task_id = task_id
-        self._set_health(RunnerHealth.FAILED)
-        try:
-            self._require_channel().send(CancelTask(runner_id=self._runner_id, task_id=task_id))
-        except Exception:  # noqa: BLE001, S110
-            pass
-        process = self._process
-        if process is not None and process.pid is not None:
-            try:
-                ProcessGroup(process.pid).signal(signal.SIGTERM)
-                process.terminate()
-            except Exception:  # noqa: BLE001, S110
-                # close() kills the group and records the health
-                pass
-        return True
-
     def health(self) -> RunnerHealth:
         with self._state_lock:
             return self._health
 
     def close(self) -> None:
+        self._shutdown_gate.run(self._close)
+
+    def _close(self) -> None:
         with self._state_lock:
-            if self._state == RunnerState.CLOSED:
-                return
             previous_state = self._state
             self._state = RunnerState.CLOSED
 
@@ -309,12 +277,7 @@ class DisposableExecutionRunner(ExecutionRunner):
             RunnerState.RUNNING,
         }:
             try:
-                channel.send(
-                    ShutdownRunner(
-                        runner_id=self._runner_id,
-                        reason="runner is closing",
-                    )
-                )
+                channel.send(ShutdownRunner(runner_id=self._runner_id))
                 is_shutdown_sent = True
             except Exception:  # noqa: BLE001
                 has_cleanup_failed = True
@@ -345,9 +308,6 @@ class DisposableExecutionRunner(ExecutionRunner):
             raise RunnerCrashed(f"runner {self._runner_id}: the process group outlived its kill")
 
     def diagnostics(self) -> str | None:
-        if self._has_read_diagnostics:
-            return None
-        self._has_read_diagnostics = True
         return TaskLog(self._directory / "task.log").tail() or None
 
     def _receive_event(self, timeout: float | None) -> RunnerEvent:
@@ -364,7 +324,7 @@ class DisposableExecutionRunner(ExecutionRunner):
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         try:
-                            return channel.receive_nowait()
+                            return channel.receive(timeout=0)
                         except ChannelReceiveTimeout:
                             raise TaskExecutionTimeout(
                                 f"runner {self._runner_id} did not answer within {timeout} seconds"
@@ -376,21 +336,17 @@ class DisposableExecutionRunner(ExecutionRunner):
                     if process.is_alive():
                         continue
                 try:
-                    return channel.receive_nowait()
+                    return channel.receive(timeout=0)
                 except ChannelReceiveTimeout:
                     break
         except EOFError:
             process.join(RUNNER_JOIN_SECONDS)
         raise RunnerExitedEarly(f"runner {self._runner_id} exited with code {process.exitcode}")
 
-    def _require_state(self, expected: RunnerState) -> None:
-        actual = self.state
-        if actual != expected:
-            raise InvalidRunnerState(f"runner {self._runner_id} is {actual.value}, expected {expected.value}")
-
     def _set_state(self, state: RunnerState) -> None:
         with self._state_lock:
-            self._state = state
+            if self._state != RunnerState.CLOSED:
+                self._state = state
 
     def _set_health(self, health: RunnerHealth) -> None:
         with self._state_lock:
@@ -435,10 +391,10 @@ class DisposableExecutionRunner(ExecutionRunner):
                     if not isinstance(command, ExecuteTask) or command.runner_id != runner_id:
                         raise RuntimeError(f"runner received invalid command: {command}")
 
-                    task_id = command.task_id
+                    task_id = command.task.task_id
                     result = engine.execute(
                         command.task,
-                        engine.context_type(
+                        ExecutionContext(
                             device=device,
                             log_path=task_log.path,
                             directory=directory,

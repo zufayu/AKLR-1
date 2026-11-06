@@ -91,6 +91,12 @@ class AuditStage(PipelineStage):
             errors.append(f"not under impls/{schema.kernel.build.language}")
         if schema.kernel is not None and schema.init is None:
             errors.append("a schema with a kernel has no init to draw its inputs")
+        if schema.kernel is not None and schema.reference is None:
+            errors.append("a schema with a kernel has no reference to check it against")
+        if schema.kernel is not None and not all(isinstance(o, Tensor) for o in schema.outputs.values()):
+            errors.append("a schema with a kernel has an output that is not a tensor")
+        if schema.kernel is not None and not schema.workloads:
+            errors.append("a schema with a kernel has no workload to bench")
         seen = set()
         for w in schema.workloads:
             at = f"workload {{{axes_text(w.axes)}}}"

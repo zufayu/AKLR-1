@@ -31,9 +31,6 @@ from aklr.core.validation.stages._bench._execution._runner import (
     DEFAULT_STARTUP_TIMEOUT_SECONDS,
     DisposableRunnerFactory,
 )
-from aklr.core.validation.stages._bench._execution._scheduler import (
-    RoundRobinStrategy,
-)
 from aklr.core.validation.stages._bench._execution._shutdown import ShutdownGate
 
 if TYPE_CHECKING:
@@ -66,8 +63,6 @@ class Executor:
                     startup_timeout_seconds=startup_timeout_seconds,
                 ),
                 engine=ExecutionEngine(),
-                strategy=RoundRobinStrategy(),
-                max_concurrency=len(devices),
             )
         )
 
@@ -106,16 +101,10 @@ class Executor:
         return self._backend.cancel_pending()
 
     def shutdown(self, wait: bool = True) -> None:
-        initiate_shutdown = False
         with self._state_lock:
             if self._state == ExecutorState.OPEN:
                 self._state = ExecutorState.CLOSING
-                initiate_shutdown = True
-
-        if initiate_shutdown:
-            self._shutdown_gate.start(self._close_backend, wait=wait)
-        if wait:
-            self._shutdown_gate.wait_until_complete()
+        self._shutdown_gate.run(self._close_backend, wait=wait)
 
     def close(self) -> None:
         self.shutdown(wait=True)

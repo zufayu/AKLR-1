@@ -20,7 +20,6 @@ from aklr.core.platform.device import DeviceTarget
 from aklr.core.schema import Schema, load_json_file, save_json_file
 from aklr.core.schema._frozen_model import frozen_dataclass
 from aklr.core.validation.stages import (
-    MEASUREMENT_PROFILE,
     STAGE_ORDER,
     AuditStage,
     BenchReport,
@@ -29,6 +28,7 @@ from aklr.core.validation.stages import (
     Paragraph,
     PipelineStage,
     Progress,
+    RoundTimer,
     StageReport,
     Table,
     ValidationScope,
@@ -68,7 +68,7 @@ class Pipeline:
             return PipelineReport(
                 head_sha=scope.head_sha,
                 base_sha=scope.base_sha,
-                measurement_profile=dict(MEASUREMENT_PROFILE),
+                measurement_profile=RoundTimer.profile(),
                 platform=platform,
                 schema_paths=tuple(map(scope.relative_path, scope.schema_paths)),
                 bench_paths=tuple(map(scope.relative_path, scope.bench_paths)),
@@ -153,7 +153,7 @@ class PipelineReport:
 
     @property
     def exit_code(self) -> int:
-        """0 passed, 1 failed (the candidate's fault), 3 aborted (the platform's fault)."""
+        """0 passed, 1 failed (the candidate's error), 3 aborted (the platform's error)."""
         stage = self.deciding_stage
         return 0 if stage is None else _EXIT_CODES[stage.status]
 

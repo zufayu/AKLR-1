@@ -25,19 +25,15 @@ class _CallbackDispatcher:
     _lock: ClassVar[threading.Lock] = threading.Lock()
 
     def __init__(self) -> None:
-        self._queue: queue.Queue[tuple[Callable[[ExecutionFuture], None], ExecutionFuture]] = queue.Queue(
-            maxsize=1024
+        self._queue: queue.SimpleQueue[tuple[Callable[[ExecutionFuture], None], ExecutionFuture]] = (
+            queue.SimpleQueue()
         )
-        self._threads = tuple(
+        for index in range(4):
             threading.Thread(
                 target=self._run,
                 name=f"aklr-execution-callback-{index}",
                 daemon=True,
-            )
-            for index in range(4)
-        )
-        for thread in self._threads:
-            thread.start()
+            ).start()
 
     @classmethod
     def default(cls) -> _CallbackDispatcher:
@@ -72,11 +68,7 @@ class ExecutionFuture(Future, Generic[T]):
         self._resource_id: str | None = None
         self._device: str | None = None
         self._directory: Path | None = None
-        self._metadata_lock = threading.Lock()
-        self._callbacks: list[Callable[[ExecutionFuture[T]], None]] = []
-        self._callback_lock = threading.Lock()
-        self._transition_lock = threading.Lock()
-        self._cancellation_notified = False
+        self._metadata_lock = threading.RLock()
 
     @property
     def task_id(self) -> str:
@@ -109,56 +101,40 @@ class ExecutionFuture(Future, Generic[T]):
         with self._metadata_lock:
             return self._directory
 
-    def assign(self, resource_id: str, device: str | None = None) -> bool:
-        if self.cancelled():
-            return False
+    def assign(self, resource_id: str, device: str) -> bool:
         with self._metadata_lock:
+            if self.done():
+                return False
             self._resource_id = resource_id
             self._device = device
             self._task_state = TaskState.ASSIGNED
         return True
 
     def mark_running(self, directory: Path | None) -> bool:
-        with self._transition_lock:
-            if not self.set_running_or_notify_cancel():
-                self._cancellation_notified = True
-                return False
         with self._metadata_lock:
+            if self.cancelled():
+                return False
+            self.set_running_or_notify_cancel()
             self._directory = directory
             self._task_state = TaskState.RUNNING
         return True
 
-    def set_result(self, result: T) -> None:
-        super().set_result(result)
-        self._dispatch_callbacks()
-
-    def set_exception(self, exception: BaseException) -> None:
-        super().set_exception(exception)
-        self._dispatch_callbacks()
-
     def cancel(self) -> bool:
-        with self._transition_lock:
-            is_cancelled = super().cancel()
-            if is_cancelled and not self._cancellation_notified:
-                # wait() and as_completed() see a cancel only once notified; notifying twice raises
-                self.set_running_or_notify_cancel()
-                self._cancellation_notified = True
-        if is_cancelled:
-            self._dispatch_callbacks()
-        return is_cancelled
+        with self._metadata_lock:
+            if self.done():
+                return self.cancelled()
+            if not super().cancel():
+                return False
+            # wait() and as_completed() need notification even if this task is never dispatched.
+            self.set_running_or_notify_cancel()
+            return True
 
     def add_done_callback(
         self,
         callback: Callable[[ExecutionFuture[T]], None],
     ) -> None:
-        with self._callback_lock:
-            if not self.done():
-                self._callbacks.append(callback)
-                return
-        try:
-            callback(self)
-        except BaseException:
-            logging.getLogger(__name__).exception("execution Future callback failed")
+        """Dispatch off-thread, including callbacks registered after completion."""
+        super().add_done_callback(lambda future: _CallbackDispatcher.default().submit(callback, future))
 
     def publish_result(self, result: T) -> None:
         with contextlib.suppress(InvalidStateError):
@@ -167,10 +143,3 @@ class ExecutionFuture(Future, Generic[T]):
     def publish_exception(self, error: BaseException) -> None:
         with contextlib.suppress(InvalidStateError):
             self.set_exception(error)
-
-    def _dispatch_callbacks(self) -> None:
-        with self._callback_lock:
-            callbacks = tuple(self._callbacks)
-            self._callbacks.clear()
-        for callback in callbacks:
-            _CallbackDispatcher.default().submit(callback, self)

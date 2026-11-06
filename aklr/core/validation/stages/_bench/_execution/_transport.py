@@ -23,23 +23,15 @@ MAX_MESSAGE_BYTES: Final = 16 << 20
 @dataclass(frozen=True)
 class ExecuteTask:
     runner_id: str
-    task_id: str
     task: ExecutionTask
-
-
-@dataclass(frozen=True)
-class CancelTask:
-    runner_id: str
-    task_id: str
 
 
 @dataclass(frozen=True)
 class ShutdownRunner:
     runner_id: str
-    reason: str
 
 
-RunnerCommand = ExecuteTask | CancelTask | ShutdownRunner
+RunnerCommand = ExecuteTask | ShutdownRunner
 
 
 @dataclass(frozen=True)
@@ -76,6 +68,10 @@ class RunnerExited:
 
 
 RunnerEvent = RunnerStarted | RunnerFailed | TaskCompleted | TaskFailed | RunnerExited
+_EVENT_TYPES = {
+    event_type.__name__: event_type
+    for event_type in (RunnerStarted, RunnerFailed, TaskCompleted, TaskFailed, RunnerExited)
+}
 
 
 class ChannelReceiveTimeout(TimeoutError):
@@ -88,9 +84,6 @@ class RunnerChannel(ABC):
 
     @abstractmethod
     def receive(self, timeout: float | None = None) -> RunnerEvent: ...
-
-    @abstractmethod
-    def receive_nowait(self) -> RunnerEvent: ...
 
     @abstractmethod
     def close(self) -> None: ...
@@ -168,20 +161,7 @@ class MultiprocessingRunnerChannel(RunnerChannel):
                     f"not a json object: {type(message).__name__}"
                 )
             kind = message.pop("kind", None)
-            event_type = (
-                {
-                    known_type.__name__: known_type
-                    for known_type in (
-                        RunnerStarted,
-                        RunnerFailed,
-                        TaskCompleted,
-                        TaskFailed,
-                        RunnerExited,
-                    )
-                }.get(kind)
-                if isinstance(kind, str)
-                else None
-            )
+            event_type = _EVENT_TYPES.get(kind) if isinstance(kind, str) else None
             if event_type is None:
                 raise ValueError(f"not an event kind: {kind!r}")
             field_names = {event_field.name for event_field in dataclasses.fields(event_type)}
@@ -192,9 +172,6 @@ class MultiprocessingRunnerChannel(RunnerChannel):
             raise
         except (OSError, ValueError, RecursionError) as error:
             raise ChannelFailure(f"could not receive runner event: {error}") from error
-
-    def receive_nowait(self) -> RunnerEvent:
-        return self.receive(timeout=0)
 
     def close(self) -> None:
         if self._is_closed:
