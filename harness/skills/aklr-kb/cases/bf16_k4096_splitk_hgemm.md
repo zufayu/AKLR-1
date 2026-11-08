@@ -48,8 +48,16 @@ file. "m" is the Point's M.
   4 waves splitting K, 32, 64 and 128 workgroups): 0.793–0.941 *(field, E4)*. n1024 at m 8–32 (16×16 tiles, 4–8
   waves splitting K, 64 and 128 workgroups): 0.907–0.980 *(field, E2)*. The count alone does not decide: n256 at
   m 4–64 runs 64 workgroups with split-K 8 or 4 across workgroups and is served at 1.036–1.130 *(field, E3)*.
-- **No gain at large M without a K split:** n2048 0.858–1.026 at m ≥ 512 *(field, E1)*; n1024 0.819–0.973 at
-  m ≥ 512 *(field, E2)*.
+- **At m ≥ 512, these CI results do not isolate the contribution of a K split:** n2048 (0.858–1.026) *(field, E1)* and n1024 (0.819–0.973)
+  *(field, E2)* are not served there, and n1024 runs a split-K launcher at m 512–2048 (after a per-call repack); n256
+  is served at m 512–4096 *(field, E3)* and n512 at m 512, 2048 and 4096 *(field, E4)* (CI run 40613440602). These CI results do not isolate the contribution of the K split at
+  N 1024–2048. They are not a reason to rule it out on another configuration; compare split and unsplit
+  versions of the same pipeline before attributing either a gain or a loss to the split. The three other tasks were
+  N64/K4096 at M256–4096, N128/K6144 at M256–2048, and N256/K6144 at M256–1024.
+  Porting n512's kernel (K over waves, a private LDS ring per wave) together with tuning gained +29.9%,
+  +26.9% and +11.9%, respectively, over the recorded rounds' parents; N128 was iteration 2.
+  The starting path was `torch.matmul`, not aiter; its actual backend dispatch was not bound to the records.
+  No arm isolated the K split (`../gemm/mainloop.md` §11).
 - **Arrival counters that live across calls.** n2048's counters are zeroed once per shape in the cached builder;
   n256's are allocated on the first call inside `launch` and kept in a closure list (with per-address pointer
   caches). The reducing block resets each counter, so the next call finds zeros. `SKILL.md`'s Stop table asks

@@ -1,5 +1,5 @@
 ---
-title: "AKLR reads every dispatch at about 4.1 µs or more: shorter kernels all look the same"
+title: "Profiled AKLR timing can mask differences between short kernels"
 kind: pitfall
 scope: [aklr validate and AKLR CI timing, any kernel or baseline shorter than about 4 µs]
 gens: [gfx950]
@@ -21,23 +21,27 @@ to it.
 
 ## Root cause
 
-A dispatch with queue profiling on costs about 4.1 µs however little it does. AKLR's bench runner sets
-`GPU_FORCE_QUEUE_PROFILING=1` in every runner process (S1), and the graph timer records its replays with a profiler,
-which turns queue profiling on as well. Switching AKLR's validate to CUDA-event timing of back-to-back replays does
-not help while the runner forces queue profiling: it read the same 4.1 µs, one kernel per call *(field, E3)*.
+In the recorded AKLR version, the bench runner set `GPU_FORCE_QUEUE_PROFILING=1` (S1).
+The listed short-kernel comparisons read about 4.1 µs under that configuration. In one back-to-back
+CUDA-event experiment with the runner still forcing queue profiling, readings remained 4.1–4.3 µs,
+one kernel per call *(field, E3)*. These observations can explain masked differences in those runs;
+they do not establish a universal per-dispatch minimum or the behavior of a different runner.
 
 ## How to detect
 
-- Read `baseline.json` (forge_task) or a validate report: a baseline at 4-5 µs is at the floor.
+- Read `baseline.json` (forge_task) or a validate report: a baseline at 4–5 µs warrants a ruler check,
+  not an automatic floor classification.
 - Time the call outside AKLR, in a process without `GPU_FORCE_QUEUE_PROFILING`: replay it back to back in one CUDA
   graph, with CUDA events, the call count taken from a short graph rather than an eager call. If both sides drop
-  well below 4 µs, AKLR's reading was the floor.
+  well below 4 µs, the two measurement configurations differ; that alone does not isolate the cause or
+  establish a universal floor.
 
 ## Fix or workaround
 
-- Before a campaign, name the workloads whose baseline sits at the floor: AKLR's CI will show no gain there, and
-  dispatch keeps serving the baseline.
-- Report a sub-floor gain with its ruler, never as an AKLR speedup.
+- Before a campaign, flag baselines near the historical 4–5 µs readings for a ruler check. Use paired
+  measurements under the current AKLR runner to decide whether a gain is distinguishable; proximity alone
+  does not predict CI's result or dispatch selection.
+- Report an external-timer gain with that ruler, not as an AKLR speedup unless AKLR measured it.
 
 ## Scope
 
