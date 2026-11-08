@@ -3,21 +3,27 @@ title: "MXFP4 fused MoE, hidden 6144, top-9, 16×16-shuffled weights (257, 65 an
 kind: case
 ops: [moe]
 dtypes: [mxfp4]
-regimes: ["tokens 1-2", "tokens 4-64", "tokens 128-4096"]
+regimes: ["tokens 1-2", "tokens 4-64", "tokens 128-4096", "GLM exact tokens 4-4096; see Point table"]
 contract: bounded
 gens: [gfx950]
 flydsl: 0.3.2
-basis: measured N=1
+basis: "measured N=1 (original CI); local section N=16 per comparison, not CI"
 measured:
   - {metric: "speedup over aiter, CI, per Point", value: "0.138–2.472; 2 of 13 Points ≥ 1.03 (m 1, 2), both served", gpu: MI355X, workload: "fused_moe_shuffled_16x16_model_dim6144_n_experts257_topk9_inter_dim256 file 1fee59821837c26f, m 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096", run_ref: "5571f4589 (CI run 40613440602); file added by 97d5eb0b3 (#81)", date: "2026-10-28"}
   - {metric: "speedup over aiter, CI, per Point", value: "1.087–1.129; 4 of 4 Points ≥ 1.03 (m 8, 16, 32, 64), all served", gpu: MI355X, workload: "fused_moe_shuffled_16x16_model_dim6144_n_experts257_topk9_inter_dim256 file 4fbd9d02b4c053c7, m 8, 16, 32, 64", run_ref: "102877ca0 (CI run 40154665266); file added by 0310eba03 (#96)", date: "2026-10-25"}
   - {metric: "speedup over aiter, CI, per Point", value: "0.991–1.609; 11 of 13 Points ≥ 1.03 (all but m 8, 32)", gpu: MI355X, workload: "fused_moe_shuffled_16x16_model_dim6144_n_experts33_topk9_inter_dim2048 file ef15e87894a8ae06, m 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096", run_ref: "5571f4589 (CI run 40613440602); file at this path since fdac7c716 (#52)", date: "2026-10-28"}
   - {metric: "speedup over aiter, CI, per Point", value: "0.801–1.365; 3 of 13 Points ≥ 1.03 (m 1, 512, 1024)", gpu: MI355X, workload: "fused_moe_shuffled_16x16_model_dim6144_n_experts65_topk9_inter_dim2048 file 1bf41ccba6750300, m 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096", run_ref: "5571f4589 (CI run 40613440602); file at this path since fdac7c716 (#52)", date: "2026-10-28"}
+  - {"metric": "local whole-call baseline speedup, representative Point; not CI", "value": "1.361 at 2048 tokens; see E9-E13 and mapping for complete coverage", "gpu": "MI355X", "workload": "glm_ep4_l", "run_ref": "local:/tmp/inf3_validation_checkpoint_0147/results/g3/glm_40937d155ca6aa98/validation/report.json", "date": "2026-11-08"}
 sources:
   - aklr/ops/fused_moe/impls/flydsl/fused_moe_shuffled_16x16_model_dim6144_n_experts257_topk9_inter_dim256/1fee59821837c26f.json
   - aklr/ops/fused_moe/impls/flydsl/fused_moe_shuffled_16x16_model_dim6144_n_experts257_topk9_inter_dim256/4fbd9d02b4c053c7.json
   - aklr/ops/fused_moe/impls/flydsl/fused_moe_shuffled_16x16_model_dim6144_n_experts33_topk9_inter_dim2048/ef15e87894a8ae06.json
   - aklr/ops/fused_moe/impls/flydsl/fused_moe_shuffled_16x16_model_dim6144_n_experts65_topk9_inter_dim2048/1bf41ccba6750300.json
+  - aklr/ops/fused_moe/impls/flydsl/fused_moe_shuffled_16x16_model_dim6144_n_experts65_topk9_inter_dim2048/40937d155ca6aa98.json
+  - aklr/ops/fused_moe/impls/flydsl/fused_moe_shuffled_16x16_model_dim6144_n_experts65_topk9_inter_dim2048/2c7c5bacd06c8e29.json
+  - aklr/ops/fused_moe/impls/flydsl/fused_moe_shuffled_16x16_model_dim6144_n_experts257_topk9_inter_dim256/aa1aaac0bdd0068f.json
+  - aklr/ops/fused_moe/impls/flydsl/fused_moe_shuffled_16x16_model_dim6144_n_experts257_topk9_inter_dim512/f2e2b374be1c9f8b.json
+  - aklr/ops/fused_moe/impls/flydsl/fused_moe_shuffled_16x16_model_dim6144_n_experts257_topk9_inter_dim512/1ddb007af161404d.json
 ---
 
 # MXFP4 fused MoE with 16×16-shuffled weights, hidden 6144, top-9
@@ -224,3 +230,83 @@ are sources of `4fbd9d02b4c053c7.json`.
 - S4 fused_moe_shuffled_16x16_model_dim6144_n_experts33_topk9_inter_dim2048/ef15e87894a8ae06.json#kernel.py:1340 per-m flags (to :1493) and launch chain at :1527–1574; fp8 rows at :1231 and :1238, `_reduce_fp8x4` at :1320; `_chiplet_order` at :156; docstring at :1; `_RUN_CACHE` at :1593, device `'cuda'` at :1494
 - S5 fused_moe_shuffled_16x16_model_dim6144_n_experts65_topk9_inter_dim2048/1bf41ccba6750300.json#kernel.py:1380 per-m flags in `_Runner` (to :1472); bf16 truncation of the stage-2 rows at :777 (m ≥ 2) and :974 (m 1), of the output at :982 (m 1) and :1080 (m ≥ 2); the other stage-2 store paths (:782–803, :843–867) are reached by no Point; `FULL_STAGE_A` at :293 and :455–467; torch sort fallback at :1493–1509 behind `fused_sort` (:1435); `_RUN_CACHE` at :1550
 - S6 aklr/core/runtime/dispatch/_dispatcher.py:111 a workload qualifies at `speedup >= AKLR_MIN_SPEEDUP` (`aklr/core/contract/spec/_workloads.py:38`); the highest-ranked file serves a Point (:113–116)
+- E9 [2026-11, gfx950, FlyDSL 0.3.2, N=16, AKLR local graph profile v18] `40937d155ca6aa98` whole-call accuracy/speedup/qualification for the exact Points above; not CI. Original report local:/tmp/inf3_validation_checkpoint_0147/results/g3/glm_40937d155ca6aa98/validation/report.json sha256=bddb9f8e50ce814b42fe7644b168dd8e07cb249d76fb0dfe035980332b6100a2; receipt local:/tmp/inf3_validation_checkpoint_0147/results/g3/glm_40937d155ca6aa98/receipt.json sha256=84187951363ef041aa4a2e9e4a51745411df69b58f96741aca4af91ccff38510.
+- S7 /workspace/code/gpt_oss_docker/work/sikl/kb_distill/ma8/glm_ep4_l/tx/glm_ep4_l_kernel_after_refinalize.py:2532 final original source, sha256=d1fa451c8a92024960193cfe5453c4ef428ea1724ef8170bbe90cd517d29f2cf; checked line ranges 2532–2605, 3065–3183, 3270–3308; byte-identical to exported kernel.py.
+- E10 [2026-11, gfx950, FlyDSL 0.3.2, N=16, AKLR local graph profile v18] `2c7c5bacd06c8e29` whole-call accuracy/speedup/qualification for the exact Points above; not CI. Original report local:/tmp/inf3_validation_checkpoint_0147/results/g5/glm_2c7c5bacd06c8e29/validation/report.json sha256=2198069dd4f4f8093d31b643d167003d10ea25258d78db864fa470538162c34f; receipt local:/tmp/inf3_validation_checkpoint_0147/results/g5/glm_2c7c5bacd06c8e29/receipt.json sha256=a2e1760098febb807d9fceb3aeef9a6e7ea0abe698a7e9dd2fa4111945f56124.
+- S8 /workspace/code/gpt_oss_docker/work/sikl/kb_distill/ma8/glm_ep4_s/tx/glm_ep4_s_kernel_final.py:57 final original source, sha256=0fdbd1d9d931eba74691858c75fc70ba86bf31024eea7d581da3ca873b659de9; checked line ranges 57–66, 326–389, 423–502; byte-identical to exported kernel.py.
+- E11 [2026-11, gfx950, FlyDSL 0.3.2, N=16, AKLR local graph profile v18] `aa1aaac0bdd0068f` whole-call accuracy/speedup/qualification for the exact Points above; not CI. Original report local:/tmp/inf3_validation_checkpoint_0147/results/g5/glm_aa1aaac0bdd0068f/validation/report.json sha256=968368f53cff8c5b1b4eba61528513b95cd5582d18be8421fc79658b6ef850a0; receipt local:/tmp/inf3_validation_checkpoint_0147/results/g5/glm_aa1aaac0bdd0068f/receipt.json sha256=e55617fe94659e69ba0a75ab9cdf69b8dcf9f431dedc591485288dd0a7081bc9.
+- S9 /workspace/code/gpt_oss_docker/work/sikl/kb_distill/ma8/glm_tp8_l/tx/glm_tp8_l_kernel_final.py:2363 final original source, sha256=a8f4c3f4c72a0956e637dd63bcedc819c5f1633c7de0b2d6142c6d880207f9ae; checked line ranges 2363–2372, 2376–2489, 2492–2679; byte-identical to exported kernel.py.
+- E12 [2026-11, gfx950, FlyDSL 0.3.2, N=16, AKLR local graph profile v18] `f2e2b374be1c9f8b` whole-call accuracy/speedup/qualification for the exact Points above; not CI. Original report local:/tmp/inf3_validation_checkpoint_0147/results/g4/glm_f2e2b374be1c9f8b/validation/report.json sha256=16976d1fb17a8accdbdde1ad5a0e7585dc91bbee2b94973cdceee5e6bab620e1; receipt local:/tmp/inf3_validation_checkpoint_0147/results/g4/glm_f2e2b374be1c9f8b/receipt.json sha256=83fcb0c0cbce307a0f7a39c990e829207bd3967aed08f9e66d8aa53decaffc74.
+- S10 /workspace/code/gpt_oss_docker/work/sikl/kb_distill/moe6/glm_l/tx/glm_l_kernel_final.py:362 final original source, sha256=462a01e0285a3a07e2fe2ad41b02540328a05cd0cbd90d4b1d7a0df46d18d181; checked line ranges 362–397, 2026–2241, 2264–2327; byte-identical to exported kernel.py.
+- E13 [2026-11, gfx950, FlyDSL 0.3.2, N=16, AKLR local graph profile v18] `1ddb007af161404d` whole-call accuracy/speedup/qualification for the exact Points above; not CI. Original report local:/tmp/inf3_validation_checkpoint_0147/results/g3/glm_1ddb007af161404d/validation/report.json sha256=46247d656a8e6f22b694af3c8fa20fa483be6faeee33a1fac7a6a079ca280bd4; receipt local:/tmp/inf3_validation_checkpoint_0147/results/g3/glm_1ddb007af161404d/receipt.json sha256=0fb0405af81cf84bd8caf8e3ccca89c14be8519a6e6b0cecf5d8584819420e5a.
+- S11 /workspace/code/gpt_oss_docker/work/sikl/kb_distill/moe6/glm_s/tx/glm_s_kernel_final.py:396 final original source, sha256=3943d69f65c792048624979d5a6616a1a67e3a357d4be07c3e773fd075e50b53; checked line ranges 396–431, 970–970, 1920–1989, 2034–2058; byte-identical to exported kernel.py.
+- S12 aklr/ops/fused_moe/contract.py:75 axes/attrs/tensors/layout/scalars/output contract; only the exact Points are claimed, not the full contract domain.
+- S13 aklr/ops/fused_moe/baseline.py:9 baseline callable; MoE interleave sets AITER_BF16_FP8_MOE_BOUND=16; DSA calls sglang Triton split-K.
+- S14 aklr/ops/fused_moe/reference.py:77 global-to-local mask mapping; :88–99 activation quantization; :107–127 clamp, activation, stage-2 routing weight and topk sum.
+
+## GLM specialized implementations
+
+Keep small and large token regimes separate: the small kernels fold routing into stage 1, while the large kernels use owned or metadata-selected projection pipelines and explicit reduction choices. The weak 128-token large case is a concrete boundary, not evidence that the large path wins everywhere.
+
+This section covers the implementations and measured token counts below. Local results are not CI acceptance or deployed dispatch. The preceding body describes its original UUIDs and CI snapshot only; its coverage, serving, activation and reduction statements do not apply to these implementations.
+
+### Applies when
+
+Hidden 6144, top-9, separated SiLU gate/up and 16x16-shuffled MXFP4 weights. E8M0 scales are shuffled and padded to (256,8); activations are quantized to MXFP4. No expert mask or SwiGLU limit is used. Hidden states and output are bf16; routing weights enter stage 2 or the final sum. These use fused_moe@1.0 with bounded comparison and whole-output SQNR >= 13 dB. T denotes input tokens, not actual per-expert GEMM M; the latter was not recorded. Each token selects distinct expert ids; num_local_tokens is absent. Exact attrs, dtypes, layouts and Points remain in the exported schemas and mapping.
+
+| Implementation | Configuration | Measured tokens |
+|---|---|---|
+| glm_ep4_l | hidden 6144, experts 65, inter 2048; no mask | 256, 2048, 4096 |
+| glm_ep4_s | hidden 6144, experts 65, inter 2048; no mask | 4, 8, 16, 32, 64, 128 |
+| glm_tp8_l | hidden 6144, experts 257, inter 256; no mask | 512, 1024, 2048, 4096 |
+| glm_l | hidden 6144, experts 257, inter 512; no mask | 128, 512, 1024, 2048, 4096 |
+| glm_s | hidden 6144, experts 257, inter 512; no mask | 32, 64 |
+
+### Counter-signals
+
+- Do not extrapolate to other tokens, slots, scalars, dtypes, layouts or routing/index distributions. The sampled inputs do not establish serving-traffic performance.
+- Whole-contract correctness/timing does not prove cross-workgroup protocol safety, reentrancy/multistream safety, occupancy, individual-kernel performance or causal gains from a mechanism. Optional source branches are not independently validated by a whole-call pass.
+- Payload accuracy/speedup fields were not populated; these archived local results change no dispatch. Actual AKLR_MIN_SPEEDUP was not archived: default qualification is reconstructed under fixed-base defaults, not proof of the runtime environment.
+- f2e2b374be1c9f8b at 128 tokens passes correctness but fails both entry and default performance qualification.
+
+### Mechanism
+
+Source facts, not ablation-based gain attribution.
+
+- **glm_ep4_l**: All listed token counts are in _OWNED and call build_moe_module(..., cfg_m=2048), not the later AITER two_stages fallback. The owned module performs route/gather, two projections, SiLU times up, quantization and route reduction; all seven tensor addresses enter the module and it writes out directly. See S7.
+- **glm_ep4_s**: _FOLD covers 4/8/16 tokens; 32/64/128 use a prelude and stage-1 code with six K partials and arrival-counter merging. Stage 1 emits packed fp4 and scales; _flydsl_moe_stage2_impl uses fp4/fp4, bf16 out, atomics and sorted routing weights. See S8.
+- **glm_tp8_l**: _plan starts from AITER metadata and replaces stage 1, sort and stage 2. All four token counts are in _TUNED. Source includes fp4 route-result packing/reduction, fused sort/activation quantization and optional W1 prefetch. Atomic and route-reduce branches take sorted weights and topk_weights respectively; metadata-dependent branch selection is not established for every Point. See S9.
+- **glm_l**: None of these Points is in _DECODE (1/2/4 tokens). Matching dtype/layout conditions select _aiter_plan, then _aiter_into_out combines custom route/quant or AITER sort, two projections and optional custom fp4 reduction into caller-owned out. Optional code is not proof of per-Point execution. At 128 tokens correctness passes but the performance gates fail. See S10.
+- **glm_s**: 32/64 tokens are outside _DECODE but inside _FOLD. Matching shuffled dtype/attrs select _fold_stage1 and _fold_stage2: routing, packed fp4 and scales, then weighted atomic bf16 output. Grid flags are (True,True) at 32 and (False,False) at 64, not evidence of absolute XCD numbers. See S11.
+
+### Result
+
+Local whole-call AKLR graph measurements (profile v18), with a 1 GiB cache flush before each call and 16 actual timing rounds per comparison. Representative values are the published per-Point speedup fields, not averages. Full timing and statistical details remain in the reports and mapping.
+
+The baseline is aklr.ops.fused_moe.baseline.fused_moe_baseline. No measured Point in this section has a default-served incumbent at the fixed base. A baseline win therefore does not establish a win against another incumbent.
+
+| Implementation | Representative speedup over baseline |
+|---|---|
+| glm_ep4_l | 1.172 at 256 tokens; 1.361 at 2048; 1.258 at 4096 *(field, E9)* |
+| glm_ep4_s | 1.185 at 4; 1.159 at 128 *(field, E10)* |
+| glm_tp8_l | 1.266 at 512; 1.843 at 4096 *(field, E11)* |
+| glm_l | 1.008 at 128 (performance gates fail); 1.674 at 4096 *(field, E12)* |
+| glm_s | 1.041 at 32; 1.032 at 64 *(field, E13)* |
+
+These are selected per-Point results, not group averages. All 20 Points pass accuracy; GLM large at 128 tokens fails performance qualification. The complete per-Point scalars, accuracy, timings, incumbent identities and gates remain in the original reports and mapping archive, not repeated here. Local qualification does not establish CI or serving.
+
+### Reproduce
+
+Fixed base a12866b1e40e86ea6aff7ac24cbe5634132f6b2e; pinned AITER dbd8bf5bd624120197a7a26780a8c72201824f0f; reported amd-aiter 0.1.21.dev66+gdbd8bf5bd; gfx950, MI355X, FlyDSL 0.3.2. For interleave only, the MoE baseline sets AITER_BF16_FP8_MOE_BOUND=16: this is an activation-path row switch, not an SQNR dB bound. Actual sglang version, tuned configuration and full runtime environment were not archived.
+
+Future revalidation must use each full exported schema recorded in the mapping, not a bare kernel, and check exact Points, scalars, attrs, dtypes and incumbent identity. It must not replace these archived results. From the repository root, use the published_path for the implementation in the mapping:
+
+```bash
+python -m aklr validate <implementation-path>
+```
+
+Evidence retains original report/receipt paths and SHA256. Local files may not persist. Source/payload/schema hashes, official kernel content hashes and raw per-Point results remain in local:/workspace/code/gpt_oss_docker/sync/inference3/postprocess_1107/moe_dsa_kernel_kb_mapping.json; this archive is not durable CI evidence.
+
+### Rollback
+
+These are local preparation artifacts, not a claim of serving. Through normal review, remove only these new UUID implementations and this section (the standalone DSA page for DSA); keep old implementations and earlier case text. Selection then follows the base Points and baseline, with no unconditional named winner.
