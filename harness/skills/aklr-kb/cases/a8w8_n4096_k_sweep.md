@@ -1,5 +1,5 @@
 ---
-title: "fp8 block-scaled GEMM, N 4096 × K 256–8192 and N 8192 / 32768 × K 1024, shuffled B — one structure per K; at K 512 and 1024 most Points up to m = 1024 are not served"
+title: "FP8 block-scaled GEMM with shuffled B — N4096 K sweep and large-N / short-K kernels; CI and local evidence separated"
 kind: case
 ops: [gemm]
 dtypes: [fp8]
@@ -7,8 +7,11 @@ regimes: ["M 1-64", "M 128-512", "M 1024-4096"]
 contract: bounded
 gens: [gfx950]
 flydsl: 0.3.2
-basis: measured N=1
+basis: measured N=1 CI; local paired rounds N=16–32
 measured:
+  - {metric: "local baseline speed-ratio lower bound, per Point", value: "1.034602–1.093687; 6 of 6 Points ≥ 1.03", gpu: MI355X, workload: "N65536 K1536; M 1, 2, 4, 8, 16, 32", run_ref: "local:/workspace/code/gpt_oss_docker/sync/inference3/postprocess_1107/fn65536_k1536.json", date: "2026-11-07"}
+  - {metric: "local baseline speed-ratio lower bound, per Point", value: "1.333043–1.966142; 5 of 5 Points ≥ 1.03", gpu: MI355X, workload: "N16384 K1536; M 1, 2, 4, 16, 32", run_ref: "local:/workspace/code/gpt_oss_docker/sync/inference3/postprocess_1107/fn16384_k1536.json", date: "2026-11-07"}
+  - {metric: "local baseline speed-ratio lower bound, per Point", value: "1.020032–1.154112; 3 of 8 Points ≥ 1.03", gpu: MI355X, workload: "N7168 K384; M 1, 2, 4, 8, 16, 32, 64, 128", run_ref: "local:/workspace/code/gpt_oss_docker/sync/inference3/postprocess_1107/fn7168_k384.json", date: "2026-11-07"}
   - {metric: "speedup over aiter, CI, per Point", value: "1.034–1.849; 13 of 13 Points ≥ 1.03", gpu: MI355X, workload: "gemm_a8w8_blockwise_scaled_b_shuffled_n4096_k256, m 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096", run_ref: "5571f4589 (CI run 40613440602)", date: "2026-10-28"}
   - {metric: "speedup over aiter, CI, per Point", value: "0.973–1.531; 4 of 13 Points ≥ 1.03", gpu: MI355X, workload: "gemm_a8w8_blockwise_scaled_b_shuffled_n4096_k512, m 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096", run_ref: "5571f4589 (CI run 40613440602)", date: "2026-10-28"}
   - {metric: "speedup over aiter, CI, per Point", value: "0.816–1.125; 5 of 13 Points ≥ 1.03", gpu: MI355X, workload: "gemm_a8w8_blockwise_scaled_b_shuffled_n4096_k1024, m 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096", run_ref: "5571f4589 (CI run 40613440602)", date: "2026-10-28"}
@@ -18,6 +21,9 @@ measured:
   - {metric: "speedup over aiter, CI, per Point", value: "1.378–1.892; 13 of 13 Points ≥ 1.03", gpu: MI355X, workload: "gemm_a8w8_blockwise_scaled_b_shuffled_n8192_k1024, m 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096", run_ref: "5571f4589 (CI run 40613440602)", date: "2026-10-28"}
   - {metric: "speedup over aiter, CI, per Point", value: "1.015–2.229; 12 of 13 Points ≥ 1.03", gpu: MI355X, workload: "gemm_a8w8_blockwise_scaled_b_shuffled_n32768_k1024, m 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096", run_ref: "5571f4589 (CI run 40613440602)", date: "2026-10-28"}
 sources:
+  - aklr/ops/gemm/impls/flydsl/gemm_a8w8_blockwise_scaled_b_shuffled_n65536_k1536/e5f9fd89c5a994fa.json
+  - aklr/ops/gemm/impls/flydsl/gemm_a8w8_blockwise_scaled_b_shuffled_n16384_k1536/ef050f07296547ba.json
+  - aklr/ops/gemm/impls/flydsl/gemm_a8w8_blockwise_scaled_b_shuffled_n7168_k384/2c481a926208c5cd.json
   - aklr/ops/gemm/impls/flydsl/gemm_a8w8_blockwise_scaled_b_shuffled_n4096_k256/5fcd9f0ebdced65c.json
   - aklr/ops/gemm/impls/flydsl/gemm_a8w8_blockwise_scaled_b_shuffled_n4096_k512/9a8319559bcb2f29.json
   - aklr/ops/gemm/impls/flydsl/gemm_a8w8_blockwise_scaled_b_shuffled_n4096_k1024/e5d65066d6572075.json
@@ -28,7 +34,19 @@ sources:
   - aklr/ops/gemm/impls/flydsl/gemm_a8w8_blockwise_scaled_b_shuffled_n32768_k1024/42ffbb4ee1697e03.json
 ---
 
-# fp8 block-scaled GEMM at N 4096 across K, and at large N with K 1024
+# FP8 block-scaled GEMM with shuffled B: K sweep and large-N / short-K kernels
+
+The eight CI-measured kernels below and the three implementations in
+[Local large-N and short-K implementations](#local-large-n-and-short-k-implementations) share the same
+column-major A-scale contract and preshuffled B layout. The local N16384/N65536 K1536 activation-slab
+paths extend the large-N skinny mechanism; N7168 K384 extends the short-K tiled/direct path.
+They belong here rather than in the [row-major A-scale case](a8w8_row_major_a_scale.md) or the
+[small-N / long-K wave-split case](a8w8_small_n_large_k.md). Each UUID remains a separate implementation.
+
+**Evidence boundary:** Applies when through Rollback below describe the original eight CI kernels only
+(E1–E9, S1–S8). The separate local section has its own exact Points, baseline configuration, toolchain
+and paired-round counts (E10–E13, S9–S11). Do not combine its qualification counts with the CI serving count or interpret
+its baseline-only ratios as improvements over an incumbent AKLR implementation.
 
 ## Applies when
 
@@ -208,7 +226,8 @@ On an MI355X, in a checkout that holds these files with these numbers (main at 0
 python -m aklr validate aklr/ops/gemm/impls/flydsl/gemm_a8w8_blockwise_scaled_b_shuffled_n4096_k1024/e5d65066d6572075.json
 ```
 
-and the same for the other seven paths under `sources`. Each runs the audit and bench stages and writes
+and the same for the other seven original CI schema paths under `sources` (N4096 across K and
+N8192/N32768 K1024), not the three local additions. Each runs the audit and bench stages and writes
 `aklr_validation/report.md` with the per-Point speedup (`aklr/ops/README.md` § Commands). Add `--base origin/main`
 only on a branch that edits the file: with the base set, bench measures only schemas that are not at the base, so
 on an unchanged checkout it skips the bench (`aklr/core/validation/stages/validation_scope.py`, `of_working_tree`).
@@ -221,6 +240,64 @@ takes a whole contract id and would also drop every other `gemm_a8w8_blockwise_s
 measures below 1.03 are not served without any rollback (9 Points of n4096_k512, 8 of n4096_k1024, 1 of
 n32768_k1024 now). Delete n4096_k8192's file, or give its m 64 and 128 Points a fixed-order reduction, if the
 contract's `compare` becomes `bitwise`.
+
+## Local large-N and short-K implementations
+
+### Shared mechanism and shape boundaries
+
+These implementations extend the same `gemm_a8w8_blockwise_scaled@1.0` / `b_shuffled` contract:
+FP8 e4m3fn A and AITER 16×16-preshuffled B, K-major 128-wide scales, transposed B, no bias,
+BF16 output. A-scale addressing remains `kb*M + row`, not row-major. All entries write the
+caller-provided output. Row-major A-scale and small-N / long-K wave splitting remain separate cases.
+
+**At large N with K1536, reuse the activation slab while streaming preshuffled weights into registers.**
+The N16384 and N65536 bodies pass A through LDS with a padded K+16-byte row stride and use weights
+as the MFMA A operand. This follows the large-N skinny path above, but the loading window, slab
+partitioning and output staging are shape-specific; one configuration is not a rule for all large N.
+
+- **N65536 K1536** (`e5f9fd89c5a994fa`, S9): BM16/BN64 with an eight-block weight window at
+  M1/2/4/8/16; BM32/BN128 with a four-block window at M32. The wider output tile does not imply a
+  larger gain: the baseline lower bound is **1.094x at M16 but 1.035x at M32** *(field, E10)*.
+  This is a modest-margin implementation, not evidence that `B_CPOL=2` is generally superior.
+- **N16384 K1536** (`ef050f07296547ba`, S10): BM16/BN64 at M1/2/4/16 and BM32/BN64 at M32;
+  the larger-row paths partition the A slab along K, and M32 stages C through LDS. The complete-call
+  lower bound reaches **1.966x at M16**, compared with **1.395x at M32** *(field, E11)*.
+  Cache-policy and slab-part settings differ from N65536; the evidence supports this whole kernel,
+  not an isolated benefit from either setting. M8 is outside the recorded coverage.
+
+**Short K384 uses narrow direct paths at small M.**
+N7168 K384 (`2c481a926208c5cd`, S11) processes just three scale blocks: a 16×16 / one-wave tile
+at M1/2/4/8/16, 16×64 / four waves at M32/64 and 32×64 / four waves at M128. A is direct at
+M1/2/4; C remains direct through M64 and is LDS-staged at M128. The lower bound is **1.154x at
+M128**, but only **1.020x at M2**; **M8's 1.031x** is barely above the recorded threshold
+*(field, E12)*. These displayed ratios are rounded; the threshold comparison uses the original
+report's full-precision lower bound. Short K does not guarantee a useful margin at every small M. M256 is not covered.
+
+These are local baseline-only comparisons, not improvements over an incumbent AKLR kernel or evidence
+of deployed selection. The exact tested Points are M1/2/4/8/16/32 for N65536,
+M1/2/4/16/32 for N16384, and M1/2/4/8/16/32/64/128 for N7168; they are not continuous ranges.
+Bounded accuracy is not bitwise reproducibility or a guarantee across arbitrary inputs and toolchains.
+There is no component ablation proving cache, staging, tile, occupancy or compiler causality.
+
+### Reproduce against the recorded baseline
+
+Use the UUID's JSON path in `sources`, gfx950, FlyDSL 0.3.2, AKLR main `a12866b` and AITER
+`dbd8bf5bd624120197a7a26780a8c72201824f0f`. The denominator is
+`aklr.ops.gemm.baseline.gemm_a8w8_blockwise_scaled_baseline`.
+**The AITER commit alone does not fix that denominator:** restore both CSV byte strings from the
+baseline configuration receipt and verify AITER's module-resolved paths under `/tmp/aiter_configs/`
+(E13). Keep the original reports, source fingerprints and per-Point paired-round counts (E10–E13),
+not the CI section's assumed measurement conditions or a mean over M.
+
+For each local JSON, run `python -m aklr export check`, then:
+
+```sh
+python -m aklr validate --base origin/main --stages audit,bench --devices 0 <implementation-json-path>
+```
+
+CI remains authoritative ([AKLR operations](../../../../aklr/ops/README.md)); local reports are
+machine-local evidence, not durable CI artifacts. To roll back, remove only the affected UUID's JSON,
+leaving prior implementations and the contract intact. Do not hand-fill accuracy or performance fields.
 
 ## Evidence
 
@@ -243,3 +320,10 @@ contract's `compare` becomes `bitwise`.
 - S6 aklr/ops/gemm/impls/flydsl/gemm_a8w8_blockwise_scaled_b_shuffled_n4096_k256/5fcd9f0ebdced65c.json#kernel.py:101 `tile_k = K`
 - S7 aklr/ops/gemm/impls/flydsl/gemm_a8w8_blockwise_scaled_b_shuffled_n4096_k4096/8c907984278eefc4.json#kernel.py:304 owner-wave reduction; half exchange through the B ring at :1092
 - S8 aklr/ops/gemm/impls/flydsl/gemm_a8w8_blockwise_scaled_b_shuffled_n32768_k1024/42ffbb4ee1697e03.json#kernel.py:1139 skinny kernel; path choice in `_Runner` at :1415
+- E10 [2026-11, gfx950, FlyDSL 0.3.2, N=16, local AKLR audit/bench graph timing per Point, paired baseline comparison] N65536 K1536, e5f9fd89c5a994fa: M1/2/4/8/16/32; zero recorded violation and baseline lower bounds ≥1.03 at all six; representative M16/M32 ratios rounded in the summary. Full-precision results remain in the report and mapping (local:/workspace/code/gpt_oss_docker/sync/inference3/postprocess_1107/fn65536_k1536.json; local:/workspace/code/gpt_oss_docker/sync/inference3/postprocess_1107/point_verdicts.json; local:/workspace/code/gpt_oss_docker/sync/inference3/postprocess_1107/new_fp8_deliveries.json).
+- E11 [2026-11, gfx950, FlyDSL 0.3.2, N=16, local AKLR audit/bench graph timing per Point, paired baseline comparison] N16384 K1536, ef050f07296547ba: M1/2/4/16/32, not M8; zero recorded violation and baseline lower bounds ≥1.03 at all five. Full-precision results remain in the report and mapping (local:/workspace/code/gpt_oss_docker/sync/inference3/postprocess_1107/fn16384_k1536.json; local:/workspace/code/gpt_oss_docker/sync/inference3/postprocess_1107/point_verdicts.json; local:/workspace/code/gpt_oss_docker/sync/inference3/postprocess_1107/new_fp8_deliveries.json).
+- E12 [2026-11, gfx950, FlyDSL 0.3.2, N=16–32, local AKLR audit/bench graph timing per Point, paired baseline comparison] N7168 K384, 2c481a926208c5cd: M1/2/4/8/16/32/64/128, not M256; 32 rounds at M1/8/16, 16 at the other Points; zero recorded violation at all eight, baseline lower bounds ≥1.03 only at M8/64/128. M8 is near threshold using the full-precision report, not its rounded display. Full-precision results remain in the report and mapping (local:/workspace/code/gpt_oss_docker/sync/inference3/postprocess_1107/fn7168_k384.json; local:/workspace/code/gpt_oss_docker/sync/inference3/postprocess_1107/point_verdicts.json).
+- E13 [2026-11, gfx950, FlyDSL 0.3.2, N=16–32, local paired baseline configuration receipt] The denominator uses AITER dbd8bf5bd624120197a7a26780a8c72201824f0f and AKLR main a12866b. The receipt archives both CSV byte strings and module-resolved paths under /tmp/aiter_configs/: a8w8_blockscale_bpreshuffle_tuned_gemm.csv SHA256 53c4d8057ce42ede156990613d45b313e180d04a79f3ac2b156108393dab3fa2; the other blockscale table, identified by its receipt path, SHA256 6bc517bbd0e368c5f3088451af686d437881b1d9c84cc90d578ae1b62bb6d988 (local:/workspace/code/gpt_oss_docker/sync/inference3/postprocess_1107/baseline_config_receipt.json).
+- S9 aklr/ops/gemm/impls/flydsl/gemm_a8w8_blockwise_scaled_b_shuffled_n65536_k1536/e5f9fd89c5a994fa.json#kernel.py:85 slab/register kernel; `_skinny_cfg` at :284, B_CPOL at :292, caller-output entry at :301. Embedded kernel.py UTF-8 SHA256: 7509a1998934b84a9eeca0389fcec5f93755645049faf47a5bcbe8aae192d74b.
+- S10 aklr/ops/gemm/impls/flydsl/gemm_a8w8_blockwise_scaled_b_shuffled_n16384_k1536/ef050f07296547ba.json#kernel.py:218 slab-part staging; scaled partial accumulation at :274, `_skinny_cfg` at :343, caller-output entry at :393. Embedded kernel.py UTF-8 SHA256: 23229cdc65fff88f27391d95e57ad391e47931b92642ad848144e9a976215d5f.
+- S11 aklr/ops/gemm/impls/flydsl/gemm_a8w8_blockwise_scaled_b_shuffled_n7168_k384/2c481a926208c5cd.json#kernel.py:389 `_pick_config`; caller-output entry at :421. Embedded kernel.py UTF-8 SHA256: 227290c056d00f00965ce1701201dd102e9eca9d9b9bd6a23627d2379a2f5e2b.
