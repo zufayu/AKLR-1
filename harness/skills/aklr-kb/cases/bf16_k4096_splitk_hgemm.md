@@ -1,9 +1,9 @@
 ---
-title: "bf16 GEMM, N 256–2048 × K 4096 — K split over waves or workgroups, folded in a fixed order"
+title: "bf16 GEMM, N 256–2048 × K 4096 — K split over waves or workgroups, folded in a fixed order; additional exact small-M cases: N 2048 × K 2048; N 512 × K 4096; N 64 × K 4096"
 kind: case
 ops: [gemm]
 dtypes: [bf16]
-regimes: ["M 1-256", "M 512-4096"]
+regimes: ["M 1-256", "M 512-4096", "N=2048 K=2048 M={1,2,4,8,16,32,64,128}", "N=512 K=4096 M={1,2,4,8,16,32,64}", "N=64 K=4096 M={1,2,4,8,16,32,64,128}"]
 contract: bitwise
 gens: [gfx950]
 flydsl: 0.3.2
@@ -13,14 +13,23 @@ measured:
   - {metric: "speedup over aiter, CI, per Point", value: "0.584–1.290; 5 of 13 Points ≥ 1.03 (m 1, 2, 64, 128, 256)", gpu: MI355X, workload: "gemm_n1024_k4096, m 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096", run_ref: "5571f4589 (CI run 40613440602); file added by 97d5eb0b3 (#81)", date: "2026-10-28"}
   - {metric: "speedup over aiter, CI, per Point", value: "0.992–1.207; 10 of 13 Points ≥ 1.03 (m 4–64, 256–4096)", gpu: MI355X, workload: "gemm_n256_k4096, m 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096", run_ref: "5571f4589 (CI run 40613440602); file added by fdac7c716 (#52)", date: "2026-10-28"}
   - {metric: "speedup over aiter, CI, per Point", value: "0.793–1.237; 5 of 13 Points ≥ 1.03 (m 128, 256, 512, 2048, 4096)", gpu: MI355X, workload: "gemm_n512_k4096, m 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096", run_ref: "5571f4589 (CI run 40613440602); file added by fdac7c716 (#52)", date: "2026-10-28"}
+  - {"metric": "whole-call per-Point baseline speedup; local AKLR audit/bench, not CI", "value": "8/8 Points qualify under default rule; representative ratios in small-M implementation evidence; full Point records in local mapping", "gpu": "MI355X", "workload": "gemm_n2048_k2048, UUID 697eeb2233f25b25, M 1, 2, 4, 8, 16, 32, 64, 128", "run_ref": "local:/tmp/inf3_validation_checkpoint_0142/results/g4/bf16_small_697eeb2233f25b25/validation/report.json", "date": "2026-11-08"}
+  - {"metric": "whole-call per-Point baseline speedup; local AKLR audit/bench, not CI", "value": "7/7 Points qualify under default rule; representative ratios in small-M implementation evidence; full Point records in local mapping", "gpu": "MI355X", "workload": "gemm_n512_k4096, UUID e42f6c833c101f69, M 1, 2, 4, 8, 16, 32, 64", "run_ref": "local:/tmp/inf3_validation_checkpoint_0142/results/g5/bf16_small_e42f6c833c101f69/validation/report.json", "date": "2026-11-08"}
+  - {"metric": "whole-call per-Point baseline speedup; local AKLR audit/bench, not CI", "value": "6/8 Points qualify under default rule; representative ratios in small-M implementation evidence; full Point records in local mapping", "gpu": "MI355X", "workload": "gemm_n64_k4096, UUID 8bec4c4d3db66ba0, M 1, 2, 4, 8, 16, 32, 64, 128", "run_ref": "local:/tmp/inf3_validation_checkpoint_0142/results/g3/bf16_small_8bec4c4d3db66ba0/validation/report.json", "date": "2026-11-08"}
 sources:
   - aklr/ops/gemm/impls/flydsl/gemm_n2048_k4096/095a7d687f48faac.json
   - aklr/ops/gemm/impls/flydsl/gemm_n1024_k4096/4f306c3bd2f6b0c1.json
   - aklr/ops/gemm/impls/flydsl/gemm_n256_k4096/9200d6d7a56e5076.json
   - aklr/ops/gemm/impls/flydsl/gemm_n512_k4096/09c4acd65577d824.json
+  - aklr/ops/gemm/impls/flydsl/gemm_n2048_k2048/697eeb2233f25b25.json
+  - aklr/ops/gemm/impls/flydsl/gemm_n512_k4096/e42f6c833c101f69.json
+  - aklr/ops/gemm/impls/flydsl/gemm_n64_k4096/8bec4c4d3db66ba0.json
 ---
 
-# bf16 GEMM at N 256–2048, K 4096: split K, fold in a fixed order
+# bf16 GEMM at N 256–2048, K 4096: split K, fold in a fixed order — historical collection and additional exact small-M cases
+
+The original collection below describes the historical kernels and Points. The additional exact small-M shapes are scoped separately in the small-M implementation evidence section; they do not expand the historical measurements or imply Kimi-K3 model provenance.
+
 
 Four FlyDSL kernels for the `gemm@1.0` contract on DeepSeek-V4 shapes (PR #49), one schema file per N. Each
 schema embeds its kernel as `kernel.sources[0].content` (`kernel.py`); the function names below are in that
@@ -109,6 +118,29 @@ repository's pin 0.3.2 (`../pitfalls/measured_a_different_build.md`).
 
 29 of the 52 Points are served.
 
+
+## small-M implementation evidence
+
+Only the discrete authored/tested Points below are covered; older kernels and results above are unchanged. These are source mechanisms and whole-call representative results, not component ablations or proof of deployment selection. See the [small-M contract, denominator, toolchain, measurement limits, reproduction, and rollback](k3_bf16_band_stream.md#small-m-implementation-evidence). Exact Point records remain in the reports and local mapping cited under Evidence.
+
+### small-M N=2048, K=2048
+
+M=1,2,4,8 select `_compile_skw8`: four K-split waves, each keeping its entire K slice in LDS. M=16,32,64,128 select `_compile_skw_av`: one DMA ring per wave, then an LDS fold in wave-index order and bf16 conversion (295–319, 398–418). Every call has one launch and no cross-workgroup workspace. This extends the wave-split mechanism of the K=4096 cases, not their shape coverage. *(source, S102; embedded `kernel.py` line numbers)*
+
+**Representative result:** M=32 reached 1.892×; M=128 reached 1.438×. All authored/tested Points for this candidate qualify under the reconstructed default rule; unlisted M values remain untested. *(field, E102)*
+
+### small-M N=512, K=4096
+
+At M=1,2,4,8,16,32, `_compile_packed` encodes real rows and K slices in MFMA operands; only matching-slice diagonal partials are valid. Lines 147–190 reduce in slice order, then wave order, through LDS. M=64 uses the distinct `_compile_m64` body (210–367), not the packed body. Both are single-launch paths; packing and reduction were not isolated as causal benefits. *(source, S106; embedded `kernel.py` line numbers)*
+
+**Representative result:** M=32 reached 1.298×; M=2 reached 1.209×. All authored/tested Points for this candidate qualify under the reconstructed default rule; unlisted M values remain untested. *(field, E106)*
+
+### small-M N=64, K=4096
+
+Each M selects a small output tile from `_CONFIG`. A/B buffer loads go directly to registers and accumulate with `fdot2_f32_bf16` (179–206), not MFMA. A fixed lane xor/butterfly fold is followed, only when W>1, by an LDS fold in wave order (209–242). One launch, no cross-workgroup counter. This is the register-dot alternative to the K=4096 MFMA paths above; N=64 is an additional exact shape, not an extrapolation of their N range. *(source, S110; embedded `kernel.py` line numbers)*
+
+**Representative result:** M=8 reached 1.349×; M=1 passed accuracy but reached only 1.026× and does not qualify under the reconstructed default rule. M=2 also does not qualify. *(field, E110)*
+
 ## Reproduce
 
 On an MI355X with the repository's FlyDSL 0.3.2, from the repository root:
@@ -134,6 +166,17 @@ without a rollback, and a `failed` accuracy is never served. Roll back for a wro
 example after a FlyDSL or LLVM upgrade, or a split-K counter left non-zero by an aborted launch.
 
 ## Evidence
+
+### small-M evidence and source references
+
+Local post-measurement review: `schemas[id=<group>_<UUID>]` in local:/workspace/code/gpt_oss_docker/sync/inference3/postprocess_1107/operator_validation_all32_reviewed.json. Complete Point records, source/schema/report/receipt SHA256s, environment/install-log locators, and the source-byte identity checks are retained in local:/workspace/code/gpt_oss_docker/sync/inference3/postprocess_1107/bf16_kernel_kb_mapping.json.
+
+- E102 [2026-11, gfx950, FlyDSL 0.3.2, N=1, local AKLR profile-v18 whole-call] `697eeb2233f25b25` / `gemm_n2048_k2048`: all authored Points accuracy passed; report local:/tmp/inf3_validation_checkpoint_0142/results/g4/bf16_small_697eeb2233f25b25/validation/report.json; report SHA256 `104e6aa88eb9ab8e233fc0049b9fa60efb0cd09adef7ae931548eb245f03ede6`. Qualification is reconstructed; no incumbent timing.
+- S102 aklr/ops/gemm/impls/flydsl/gemm_n2048_k2048/697eeb2233f25b25.json#kernel.py:435 executable branches; official kernel-content fingerprint `3b56dda781c2125efa5d92240ade3715d771941c8e9b41ae95d0b2ec4e3232f6`. Untracked at measurement, not source contained in the report head commit.
+- E106 [2026-11, gfx950, FlyDSL 0.3.2, N=1, local AKLR profile-v18 whole-call] `e42f6c833c101f69` / `gemm_n512_k4096`: all authored Points accuracy passed; report local:/tmp/inf3_validation_checkpoint_0142/results/g5/bf16_small_e42f6c833c101f69/validation/report.json; report SHA256 `bb0c4af1c60370257ab03a611a649641887b6f41e08b9ce9afa0f59e2d912044`. Qualification is reconstructed; no incumbent timing.
+- S106 aklr/ops/gemm/impls/flydsl/gemm_n512_k4096/e42f6c833c101f69.json#kernel.py:44 executable branches; official kernel-content fingerprint `7b48a582da92276a4fe6adb089f98080c76f4974faa2f88f3588ffe5acf14877`. Untracked at measurement, not source contained in the report head commit.
+- E110 [2026-11, gfx950, FlyDSL 0.3.2, N=1, local AKLR profile-v18 whole-call] `8bec4c4d3db66ba0` / `gemm_n64_k4096`: all authored Points accuracy passed; report local:/tmp/inf3_validation_checkpoint_0142/results/g3/bf16_small_8bec4c4d3db66ba0/validation/report.json; report SHA256 `57795d5468785df1664354cc86f6e8941ae54734b8df3cdb35a767d31326748e`. Qualification is reconstructed; no incumbent timing.
+- S110 aklr/ops/gemm/impls/flydsl/gemm_n64_k4096/8bec4c4d3db66ba0.json#kernel.py:109 executable branches; official kernel-content fingerprint `1cf2ec272b86ca6a194f6e5b259339e2941a88b306f89a8e922298f59d63fa6c`. Untracked at measurement, not source contained in the report head commit.
 
 - E1 [2026-10, gfx950, FlyDSL 0.3.4.1, N=1, AKLR CI] speedup over aiter per Point 0.858–1.400, 9 of 13 Points ≥ 1.03 (m 1–256) (gemm_n2048_k4096, m 1–4096; 5571f4589, CI run 40613440602)
 - E2 [2026-10, gfx950, FlyDSL 0.3.4.1, N=1, AKLR CI] speedup over aiter per Point 0.584–1.290, 5 of 13 Points ≥ 1.03 (m 1, 2, 64, 128, 256) (gemm_n1024_k4096, m 1–4096; 5571f4589, CI run 40613440602)

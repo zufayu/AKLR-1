@@ -1,9 +1,9 @@
 ---
-title: "bf16 GEMM, N 6016–8448 × K 7168 and N 7168 × K 35840 (Kimi-K3) — split K 2–8 ways at m ≤ 112 with an in-launch fixed-order fold, a 4-wave AGPR tile or a split tail at large m"
+title: "bf16 GEMM, N 6016–8448 × K 7168 and N 7168 × K 35840 (Kimi-K3) — split K 2–8 ways at m ≤ 112 with an in-launch fixed-order fold, a 4-wave AGPR tile or a split tail at large m; additional exact small-M cases: N 6144 × K 6144"
 kind: case
 ops: [gemm]
 dtypes: [bf16]
-regimes: ["M 8-112", "M 893-16384"]
+regimes: ["M 8-112", "M 893-16384", "N=6144 K=6144 M={1,2,4,8,16,32,64,128}"]
 contract: bitwise
 gens: [gfx950]
 flydsl: 0.3.2
@@ -14,15 +14,20 @@ measured:
   - {metric: "speedup over aiter, local validate lower bound per Point; no CI measurement on main", value: "1.085–1.552; 13 of 13 Points ≥ 1.03; 0 served", gpu: MI355X, workload: "gemm_n6288_k7168, m 8, 12, 16, 24, 32, 40, 48, 56, 60, 893, 2732, 9397, 16384", run_ref: "local:/workspace/code/gpt_oss_docker/work/sikl/k3_forge/final_r2ab6_local/report.md:97", date: "2026-10-26"}
   - {metric: "speedup over aiter, local validate lower bound per Point; no CI measurement on main", value: "0.949–2.000 (2.000 is the bound's cap); 15 of 17 Points ≥ 1.03 (not m 2732, 9397); 0 served", gpu: MI355X, workload: "gemm_n8448_k7168, m 8–16384 (17 Points)", run_ref: "local:/workspace/code/gpt_oss_docker/work/sikl/k3_forge/final_r2ab6_local/report.md:127", date: "2026-10-26"}
   - {metric: "speedup over aiter, local validate lower bound per Point; no CI measurement on main", value: "0.875–1.231; 11 of 15 Points ≥ 1.03 (not m 80, 893, 9397, 16384); 0 served", gpu: MI355X, workload: "gemm_n7168_k35840, m 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 893, 2732, 9397, 16384", run_ref: "local:/workspace/code/gpt_oss_docker/work/sikl/k3_forge/final3_local/validate/report.md:46", date: "2026-10-26"}
+  - {"metric": "whole-call per-Point baseline speedup; local AKLR audit/bench, not CI", "value": "8/8 Points qualify under default rule; representative ratios in small-M implementation evidence; full Point records in local mapping", "gpu": "MI355X", "workload": "gemm_n6144_k6144, UUID bfae0e0137d0d54d, M 1, 2, 4, 8, 16, 32, 64, 128", "run_ref": "local:/tmp/inf3_validation_checkpoint_0142/results/g5/bf16_small_bfae0e0137d0d54d/validation/report.json", "date": "2026-11-08"}
 sources:
   - aklr/ops/gemm/impls/flydsl/gemm_n6016_k7168/fe6fa078b3de6610.json
   - aklr/ops/gemm/impls/flydsl/gemm_n6144_k7168/41ac253b2d1a6704.json
   - aklr/ops/gemm/impls/flydsl/gemm_n6288_k7168/18df46ab10cda50d.json
   - aklr/ops/gemm/impls/flydsl/gemm_n8448_k7168/5beee8319bd5c527.json
   - aklr/ops/gemm/impls/flydsl/gemm_n7168_k35840/5ac66d6dae624f93.json
+  - aklr/ops/gemm/impls/flydsl/gemm_n6144_k6144/bfae0e0137d0d54d.json
 ---
 
-# bf16 GEMM at N 6016–8448, K 7168 and at K 35840 (Kimi-K3): a few K splits folded inside the launch
+# bf16 GEMM at N 6016–8448, K 7168 and at K 35840 (Kimi-K3): a few K splits folded inside the launch — historical collection and additional exact small-M cases
+
+The original collection below describes the historical Kimi-K3 kernels and Points. The additional exact small-M shapes are scoped separately in the small-M implementation evidence section; they do not expand the historical measurements or imply Kimi-K3 model provenance.
+
 
 Five FlyDSL kernels for the `gemm@1.0` contract on Kimi-K3 shapes (definitions #69, kernels #115, merge
 a8fe490b1), one schema file per shape, written by forge-loop campaigns and reviewed; n6016, n6144 and n8448 share
@@ -149,6 +154,17 @@ small-m code compiles to the earlier kernel's ISA *(field, E12)*.
 | n8448 *(field, E4)* | 1.165–2.000 | 1.085 | 0.985 | 0.949 | 1.127 | 15 of 17 | 0 |
 | k35840 *(field, E5)* | 1.013–1.195 | 0.875 | 1.231 | 0.989 | 0.927 | 11 of 15 | 0 |
 
+
+## small-M implementation evidence
+
+Only the discrete authored/tested Points below are covered; older kernels and results above are unchanged. These are source mechanisms and whole-call representative results, not component ablations or proof of deployment selection. See the [small-M contract, denominator, toolchain, measurement limits, reproduction, and rollback](k3_bf16_band_stream.md#small-m-implementation-evidence). Exact Point records remain in the reports and local mapping cited under Evidence.
+
+### small-M N=6144, K=6144
+
+M=1,2,4,8,16,32 use a strip DMA-ring body in one launch. M=64 uses four-way cross-workgroup split-K, per-call uninitialized workspace, and a dispatch-tagged arrival counter; the last workgroup folds in split-index order (535–615). M=128 instead uses four-way split-K followed by a separate fold launch (623–651). It is not the tagged single-launch path. Whole-call correctness does not prove the M=64 hand-off protocol safe. *(source, S109; embedded `kernel.py` line numbers)*
+
+**Representative result:** M=128 reached 1.310×; M=8 reached 1.095×. All authored/tested Points for this candidate qualify under the reconstructed default rule; unlisted M values remain untested. *(field, E109)*
+
 ## Reproduce
 
 On an MI355X with the repository's FlyDSL 0.3.2, from the repository root, one schema at a time:
@@ -179,6 +195,13 @@ their splits are not resident, NaN or a stale fold after a timed-out launch of t
 LLVM.
 
 ## Evidence
+
+### small-M evidence and source references
+
+Local post-measurement review: `schemas[id=<group>_<UUID>]` in local:/workspace/code/gpt_oss_docker/sync/inference3/postprocess_1107/operator_validation_all32_reviewed.json. Complete Point records, source/schema/report/receipt SHA256s, environment/install-log locators, and the source-byte identity checks are retained in local:/workspace/code/gpt_oss_docker/sync/inference3/postprocess_1107/bf16_kernel_kb_mapping.json.
+
+- E109 [2026-11, gfx950, FlyDSL 0.3.2, N=1, local AKLR profile-v18 whole-call] `bfae0e0137d0d54d` / `gemm_n6144_k6144`: all authored Points accuracy passed; report local:/tmp/inf3_validation_checkpoint_0142/results/g5/bf16_small_bfae0e0137d0d54d/validation/report.json; report SHA256 `8a0a797e93a7dfa446da45e21ab641a207530b105c35f7486005c1b595fba65b`. Qualification is reconstructed; no incumbent timing.
+- S109 aklr/ops/gemm/impls/flydsl/gemm_n6144_k6144/bfae0e0137d0d54d.json#kernel.py:29 executable branches; official kernel-content fingerprint `a3c10d217a82355d67b3a2685de62d435f6f54aa379085248bb6805ee4d7f3aa`. Untracked at measurement, not source contained in the report head commit.
 
 `<schema>.json#kernel.py:<line>` is a line of the `kernel.py` a schema embeds in `kernel.sources`; "local validate"
 is `python -m sikl validate` on MI355X in the campaign containers, the ratio lower bound over aiter per Point.

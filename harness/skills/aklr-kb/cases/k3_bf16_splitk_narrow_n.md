@@ -1,9 +1,9 @@
 ---
-title: "bf16 GEMM, N 144–3584 × K 7168 (Kimi-K3) — K split 4–16 ways across workgroups at m ≤ 112 and folded in a fixed order inside the launch; tiled or lightly split grids at m ≥ 893"
+title: "bf16 GEMM, N 144–3584 × K 7168 (Kimi-K3) — K split 4–16 ways across workgroups at m ≤ 112 and folded in a fixed order inside the launch; tiled or lightly split grids at m ≥ 893; additional exact small-M cases: N 2048 × K 7168"
 kind: case
 ops: [gemm]
 dtypes: [bf16]
-regimes: ["M 7-112", "M 893-16384"]
+regimes: ["M 7-112", "M 893-16384", "N=2048 K=7168 M={1,2,4,8,16,32,64,128}"]
 contract: bitwise
 gens: [gfx950]
 flydsl: 0.3.2
@@ -15,6 +15,7 @@ measured:
   - {metric: "speedup over aiter, local validate lower bound per Point; no CI measurement on main", value: "0.956–1.594; 15 of 17 Points ≥ 1.03 (not m 9397, 16384); 0 served", gpu: MI355X, workload: "gemm_n1536_k7168, m 8–16384 (17 Points)", run_ref: "bea458605 (commit message table; branch kyle/skill-kernel-loop)", date: "2026-10-25"}
   - {metric: "speedup over aiter, local validate lower bound per Point; no CI measurement on main", value: "1.034–1.697; 17 of 17 Points ≥ 1.03; 0 served", gpu: MI355X, workload: "gemm_n2112_k7168, m 8–16384 (17 Points)", run_ref: "513005dab (commit message table; branch kyle/skill-kernel-loop)", date: "2026-10-25"}
   - {metric: "speedup over aiter, local validate lower bound per Point; no CI measurement on main", value: "1.229–2.000; 11 of 11 Points ≥ 1.03; 0 served", gpu: MI355X, workload: "gemm_n3584_k7168, m 7, 14, 21, 28, 35, 42, 49, 56, 70, 84, 98", run_ref: "4a8e9860b (commit message table; branch kyle/skill-kernel-loop)", date: "2026-10-25"}
+  - {"metric": "whole-call per-Point baseline speedup; local AKLR audit/bench, not CI", "value": "8/8 Points qualify under default rule; representative ratios in small-M implementation evidence; full Point records in local mapping", "gpu": "MI355X", "workload": "gemm_n2048_k7168, UUID 1f5a93c79dbd12bf, M 1, 2, 4, 8, 16, 32, 64, 128", "run_ref": "local:/tmp/inf3_validation_checkpoint_0142/results/g5/bf16_small_1f5a93c79dbd12bf/validation/report.json", "date": "2026-11-08"}
 sources:
   - aklr/ops/gemm/impls/flydsl/gemm_n144_k7168/c86923da04869cbc.json
   - aklr/ops/gemm/impls/flydsl/gemm_n768_k7168/28d19101c5b0d2f4.json
@@ -22,9 +23,13 @@ sources:
   - aklr/ops/gemm/impls/flydsl/gemm_n1536_k7168/0b9e2a207d909b40.json
   - aklr/ops/gemm/impls/flydsl/gemm_n2112_k7168/2b8c0ff5a4fa7981.json
   - aklr/ops/gemm/impls/flydsl/gemm_n3584_k7168/631331203e1c39ad.json
+  - aklr/ops/gemm/impls/flydsl/gemm_n2048_k7168/1f5a93c79dbd12bf.json
 ---
 
-# bf16 GEMM at N 144–3584, K 7168 (Kimi-K3): split K across workgroups, fold it inside the launch
+# bf16 GEMM at N 144–3584, K 7168 (Kimi-K3): split K across workgroups, fold it inside the launch — historical collection and additional exact small-M cases
+
+The original collection below describes the historical Kimi-K3 kernels and Points. The additional exact small-M shapes are scoped separately in the small-M implementation evidence section; they do not expand the historical measurements or imply Kimi-K3 model provenance.
+
 
 Six FlyDSL kernels for the `gemm@1.0` contract on Kimi-K3 shapes (definitions #69, kernels #115, merge
 a8fe490b1), one schema file per shape, written by forge-loop campaigns and reviewed. Each schema embeds its
@@ -159,6 +164,17 @@ capped at 2.000; "≥ 1.03" counts them against the dispatch threshold (that val
 
 "–": no such Point.
 
+
+## small-M implementation evidence
+
+Only the discrete authored/tested Points below are covered; older kernels and results above are unchanged. These are source mechanisms and whole-call representative results, not component ablations or proof of deployment selection. See the [small-M contract, denominator, toolchain, measurement limits, reproduction, and rollback](k3_bf16_band_stream.md#small-m-implementation-evidence). Exact Point records remain in the reports and local mapping cited under Evidence.
+
+### small-M N=2048, K=7168
+
+M=1,2,4,8 split K over four waves inside one workgroup using private XOR-swizzled LDS rings. M=16,32,64,128 additionally split K over four workgroups. Per-call workspace holds fp32 partials and per-split tags derived from the queue pointer and dispatch ID. Lines 368–381 fold in split order; 397–423 publish and inspect all tags before a conditional fold. This is not an atomic last-arriver counter. The whole-call checks do not establish collision freedom, publication visibility, concurrency safety, or a unique folding workgroup. *(source, S103; embedded `kernel.py` line numbers)*
+
+**Representative result:** M=128 reached 1.240×; M=16 reached 1.126×. All authored/tested Points for this candidate qualify under the reconstructed default rule; unlisted M values remain untested. *(field, E103)*
+
 ## Reproduce
 
 On an MI355X with the repository's FlyDSL 0.3.2, from the repository root, one schema at a time:
@@ -190,6 +206,13 @@ launch, a silently wrong sum from n1536 when its splits are not resident, a hang
 LLVM.
 
 ## Evidence
+
+### small-M evidence and source references
+
+Local post-measurement review: `schemas[id=<group>_<UUID>]` in local:/workspace/code/gpt_oss_docker/sync/inference3/postprocess_1107/operator_validation_all32_reviewed.json. Complete Point records, source/schema/report/receipt SHA256s, environment/install-log locators, and the source-byte identity checks are retained in local:/workspace/code/gpt_oss_docker/sync/inference3/postprocess_1107/bf16_kernel_kb_mapping.json.
+
+- E103 [2026-11, gfx950, FlyDSL 0.3.2, N=1, local AKLR profile-v18 whole-call] `1f5a93c79dbd12bf` / `gemm_n2048_k7168`: all authored Points accuracy passed; report local:/tmp/inf3_validation_checkpoint_0142/results/g5/bf16_small_1f5a93c79dbd12bf/validation/report.json; report SHA256 `4766837485517dd3f45f93e2eb2ef18ac50e72ac00777779fd4b78e7a757cab7`. Qualification is reconstructed; no incumbent timing.
+- S103 aklr/ops/gemm/impls/flydsl/gemm_n2048_k7168/1f5a93c79dbd12bf.json#kernel.py:441 executable branches; official kernel-content fingerprint `e542953f5a06396d7ca63d62a4dcc5585587b6c80bc04e46dea3744227312a94`. Untracked at measurement, not source contained in the report head commit.
 
 `<schema>.json#kernel.py:<line>` is a line of the `kernel.py` a schema embeds in `kernel.sources`; "local validate"
 is `python -m sikl validate` on MI355X in the campaign containers, the ratio lower bound over aiter per Point.
