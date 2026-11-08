@@ -1,9 +1,9 @@
 ---
-title: "bf16 GEMM, narrow N (32–256) × K 6144 — whole dot products per wave or workgroup at M ≤ 8, split-K with a fixed-order fold at M ≥ 2048"
+title: "bf16 GEMM, narrow N (32–256) × K 6144 — whole dot products per wave or workgroup at M ≤ 8, split-K with a fixed-order fold at M ≥ 2048; additional exact large-M cases: N 128 × K 6144; N 256 × K 6144"
 kind: case
 ops: [gemm]
 dtypes: [bf16]
-regimes: ["M 2-8", "M 16-1024", "M 2048-4096"]
+regimes: ["M 2-8", "M 16-1024", "M 2048-4096", "N=128 K=6144 M={256,512,1024,2048}", "N=256 K=6144 M={256,512,1024}"]
 contract: bitwise
 gens: [gfx950]
 flydsl: 0.3.2
@@ -12,13 +12,20 @@ measured:
   - {metric: "speedup over aiter, CI, per Point", value: "0.565–1.195; 2 of 13 Points ≥ 1.03 (m 2, 4)", gpu: MI355X, workload: "gemm_n128_k6144, m 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096", run_ref: "5571f4589 (CI run 40613440602); file added by 97d5eb0b3 (#81)", date: "2026-10-28"}
   - {metric: "speedup over aiter, CI, per Point", value: "0.490–1.201; 5 of 13 Points ≥ 1.03 (m 2, 4, 8, 2048, 4096)", gpu: MI355X, workload: "gemm_n256_k6144, m 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096", run_ref: "5571f4589 (CI run 40613440602); file added by 97d5eb0b3 (#81)", date: "2026-10-28"}
   - {metric: "speedup over aiter, CI, per Point", value: "0.694–1.841; 3 of 13 Points ≥ 1.03 (m 4, 8, 2048)", gpu: MI355X, workload: "gemm_n32_k6144, m 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096", run_ref: "5571f4589 (CI run 40613440602); file added by 97d5eb0b3 (#81)", date: "2026-10-28"}
+  - {"metric": "whole-call per-Point baseline speedup; local AKLR audit/bench, not CI", "value": "4/4 Points qualify under default rule; representative ratios in large-M implementation evidence; full Point records in local mapping", "gpu": "MI355X", "workload": "gemm_n128_k6144, UUID 71234a12ada11ac5, M 256, 512, 1024, 2048", "run_ref": "local:/tmp/inf3_validation_checkpoint_0142/results/g5/bf16_large_71234a12ada11ac5/validation/report.json", "date": "2026-11-08"}
+  - {"metric": "whole-call per-Point baseline speedup; local AKLR audit/bench, not CI", "value": "3/3 Points qualify under default rule; representative ratios in large-M implementation evidence; full Point records in local mapping", "gpu": "MI355X", "workload": "gemm_n256_k6144, UUID 3da7088c64723d7c, M 256, 512, 1024", "run_ref": "local:/tmp/inf3_validation_checkpoint_0142/results/g4/bf16_large_3da7088c64723d7c/validation/report.json", "date": "2026-11-08"}
 sources:
   - aklr/ops/gemm/impls/flydsl/gemm_n128_k6144/0bac580d3d76a3df.json
   - aklr/ops/gemm/impls/flydsl/gemm_n256_k6144/0d33213684622a71.json
   - aklr/ops/gemm/impls/flydsl/gemm_n32_k6144/87f4f44793d84725.json
+  - aklr/ops/gemm/impls/flydsl/gemm_n128_k6144/71234a12ada11ac5.json
+  - aklr/ops/gemm/impls/flydsl/gemm_n256_k6144/3da7088c64723d7c.json
 ---
 
-# bf16 GEMM at narrow N, K 6144: one dot product per wave at small M
+# bf16 GEMM at narrow N, K 6144: one dot product per wave at small M — historical collection and additional exact large-M cases
+
+The original collection below describes the historical kernels and Points. The additional exact large-M shapes are scoped separately in the large-M implementation evidence section; they do not expand the historical measurements or imply Kimi-K3 model provenance.
+
 
 Three FlyDSL kernels for the `gemm@1.0` contract on GLM-5.2 shapes (PR #43), one schema file per N. Each schema
 embeds its kernel as `kernel.sources[0].content` (`kernel.py`); the function names below are in that file. "m" is
@@ -141,3 +148,28 @@ m = 2048).
 - E1 [2026-10, gfx950, FlyDSL 0.3.4.1, N=1, AKLR CI] speedup over aiter per Point 0.565–1.195, 2 of 13 Points ≥ 1.03 (m 2, 4) (gemm_n128_k6144, m 1–4096; 5571f4589, CI run 40613440602)
 - E2 [2026-10, gfx950, FlyDSL 0.3.4.1, N=1, AKLR CI] speedup over aiter per Point 0.490–1.201, 5 of 13 Points ≥ 1.03 (m 2, 4, 8, 2048, 4096) (gemm_n256_k6144, m 1–4096; 5571f4589, CI run 40613440602)
 - E3 [2026-10, gfx950, FlyDSL 0.3.4.1, N=1, AKLR CI] speedup over aiter per Point 0.694–1.841, 3 of 13 Points ≥ 1.03 (m 4, 8, 2048) (gemm_n32_k6144, m 1–4096; 5571f4589, CI run 40613440602)
+
+### large-M evidence and source references
+
+Local post-measurement review: `schemas[id=<group>_<UUID>]` in local:/workspace/code/gpt_oss_docker/sync/inference3/postprocess_1107/operator_validation_all32_reviewed.json. Complete Point records, source/schema/report/receipt SHA256s, environment/install-log locators, and the source-byte identity checks are retained in local:/workspace/code/gpt_oss_docker/sync/inference3/postprocess_1107/bf16_kernel_kb_mapping.json.
+
+- E212 [2026-11, gfx950, FlyDSL 0.3.2, N=1, local AKLR profile-v18 whole-call] `71234a12ada11ac5` / `gemm_n128_k6144`: all authored Points accuracy passed; report local:/tmp/inf3_validation_checkpoint_0142/results/g5/bf16_large_71234a12ada11ac5/validation/report.json; report SHA256 `044c011519b3eb0a2c0ffb472344e82c976d05608de87ee54ee5bec4247a1073`. Qualification is reconstructed; no incumbent timing.
+- S212 aklr/ops/gemm/impls/flydsl/gemm_n128_k6144/71234a12ada11ac5.json#kernel.py:22 executable branches; official kernel-content fingerprint `6d38d051155179c947334d8dd7bc9f887859017ee43e586797dbb7a933525f1b`. Untracked at measurement, not source contained in the report head commit.
+- E214 [2026-11, gfx950, FlyDSL 0.3.2, N=1, local AKLR profile-v18 whole-call] `3da7088c64723d7c` / `gemm_n256_k6144`: all authored Points accuracy passed; report local:/tmp/inf3_validation_checkpoint_0142/results/g4/bf16_large_3da7088c64723d7c/validation/report.json; report SHA256 `8cea7569820c3630e4c88f944410ad2c209b29931730993ebf48d6b3da6c65b3`. Qualification is reconstructed; no incumbent timing.
+- S214 aklr/ops/gemm/impls/flydsl/gemm_n256_k6144/3da7088c64723d7c.json#kernel.py:23 executable branches; official kernel-content fingerprint `c4eb3c9f885fb9f96ff5efa2b2fb5e32b39083a7bb61d030db2ac22bec2ecf73`. Untracked at measurement, not source contained in the report head commit.
+
+## large-M implementation evidence
+
+Only the discrete authored/tested Points below are covered; older kernels and results above are unchanged. These are source mechanisms and whole-call representative results, not component ablations or proof of deployment selection. See the [large-M contract, denominator, toolchain, measurement limits, reproduction, and rollback](k3_bf16_band_stream.md#large-m-implementation-evidence). Exact Point records remain in the reports and local mapping cited under Evidence.
+
+### large-M N=128, K=6144
+
+M=256,512 split K over eight waves; M=1024 uses four waves and M=2048 three, with a private DMA ring per wave. Lines 416–448 select a fixed pairwise tree or a wave-order LDS fold before bf16 conversion. There is no cross-workgroup counter. M=4096 has no authored or tested Point; the largest-bucket fallback is not evidence for it. *(source, S212; embedded `kernel.py` line numbers)*
+
+**Representative result:** M=512 reached 1.337×; M=2048 reached 1.206×. All authored/tested Points for this candidate qualify under the reconstructed default rule; unlisted M values remain untested. *(field, E212)*
+
+### large-M N=256, K=6144
+
+Four waves each have a two-stage LDS ring. M=256 uses KS=1; M=512 uses KS=2; M=1024 uses KS=4. The latter two use cross-workgroup partials and dispatch-tagged counter workspace (409–470). KS=2 adds own+peer; KS=4 adds in split-index order (478–504). The source establishes that the protocol exists, not that it is safe. M=2048,4096 have no authored or tested Points. *(source, S214; embedded `kernel.py` line numbers)*
+
+**Representative result:** M=512 reached 1.624×; M=256 reached 1.377×. All authored/tested Points for this candidate qualify under the reconstructed default rule; unlisted M values remain untested. *(field, E214)*

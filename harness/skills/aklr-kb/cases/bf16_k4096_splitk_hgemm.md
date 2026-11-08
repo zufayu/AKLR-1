@@ -1,9 +1,9 @@
 ---
-title: "bf16 GEMM, N 256–2048 × K 4096 — K split over waves or workgroups, folded in a fixed order"
+title: "bf16 GEMM, N 256–2048 × K 4096 — K split over waves or workgroups, folded in a fixed order; additional exact large-M cases: N 64 × K 4096"
 kind: case
 ops: [gemm]
 dtypes: [bf16]
-regimes: ["M 1-256", "M 512-4096"]
+regimes: ["M 1-256", "M 512-4096", "N=64 K=4096 M={256,512,1024,2048,4096}"]
 contract: bitwise
 gens: [gfx950]
 flydsl: 0.3.2
@@ -13,14 +13,19 @@ measured:
   - {metric: "speedup over aiter, CI, per Point", value: "0.584–1.290; 5 of 13 Points ≥ 1.03 (m 1, 2, 64, 128, 256)", gpu: MI355X, workload: "gemm_n1024_k4096, m 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096", run_ref: "5571f4589 (CI run 40613440602); file added by 97d5eb0b3 (#81)", date: "2026-10-28"}
   - {metric: "speedup over aiter, CI, per Point", value: "0.992–1.207; 10 of 13 Points ≥ 1.03 (m 4–64, 256–4096)", gpu: MI355X, workload: "gemm_n256_k4096, m 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096", run_ref: "5571f4589 (CI run 40613440602); file added by fdac7c716 (#52)", date: "2026-10-28"}
   - {metric: "speedup over aiter, CI, per Point", value: "0.793–1.237; 5 of 13 Points ≥ 1.03 (m 128, 256, 512, 2048, 4096)", gpu: MI355X, workload: "gemm_n512_k4096, m 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096", run_ref: "5571f4589 (CI run 40613440602); file added by fdac7c716 (#52)", date: "2026-10-28"}
+  - {"metric": "whole-call per-Point baseline speedup; local AKLR audit/bench, not CI", "value": "5/5 Points qualify under default rule; representative ratios in large-M implementation evidence; full Point records in local mapping", "gpu": "MI355X", "workload": "gemm_n64_k4096, UUID f39f8ba0861eecef, M 256, 512, 1024, 2048, 4096", "run_ref": "local:/tmp/inf3_validation_checkpoint_0142/results/g5/bf16_large_f39f8ba0861eecef/validation/report.json", "date": "2026-11-08"}
 sources:
   - aklr/ops/gemm/impls/flydsl/gemm_n2048_k4096/095a7d687f48faac.json
   - aklr/ops/gemm/impls/flydsl/gemm_n1024_k4096/4f306c3bd2f6b0c1.json
   - aklr/ops/gemm/impls/flydsl/gemm_n256_k4096/9200d6d7a56e5076.json
   - aklr/ops/gemm/impls/flydsl/gemm_n512_k4096/09c4acd65577d824.json
+  - aklr/ops/gemm/impls/flydsl/gemm_n64_k4096/f39f8ba0861eecef.json
 ---
 
-# bf16 GEMM at N 256–2048, K 4096: split K, fold in a fixed order
+# bf16 GEMM at N 256–2048, K 4096: split K, fold in a fixed order — historical collection and additional exact large-M cases
+
+The original collection below describes the historical kernels and Points. The additional exact large-M shapes are scoped separately in the large-M implementation evidence section; they do not expand the historical measurements or imply Kimi-K3 model provenance.
+
 
 Four FlyDSL kernels for the `gemm@1.0` contract on DeepSeek-V4 shapes (PR #49), one schema file per N. Each
 schema embeds its kernel as `kernel.sources[0].content` (`kernel.py`); the function names below are in that
@@ -139,3 +144,20 @@ example after a FlyDSL or LLVM upgrade, or a split-K counter left non-zero by an
 - E2 [2026-10, gfx950, FlyDSL 0.3.4.1, N=1, AKLR CI] speedup over aiter per Point 0.584–1.290, 5 of 13 Points ≥ 1.03 (m 1, 2, 64, 128, 256) (gemm_n1024_k4096, m 1–4096; 5571f4589, CI run 40613440602)
 - E3 [2026-10, gfx950, FlyDSL 0.3.4.1, N=1, AKLR CI] speedup over aiter per Point 0.992–1.207, 10 of 13 Points ≥ 1.03 (m 4–64, 256–4096) (gemm_n256_k4096, m 1–4096; 5571f4589, CI run 40613440602)
 - E4 [2026-10, gfx950, FlyDSL 0.3.4.1, N=1, AKLR CI] speedup over aiter per Point 0.793–1.237, 5 of 13 Points ≥ 1.03 (m 128, 256, 512, 2048, 4096) (gemm_n512_k4096, m 1–4096; 5571f4589, CI run 40613440602)
+
+### large-M evidence and source references
+
+Local post-measurement review: `schemas[id=<group>_<UUID>]` in local:/workspace/code/gpt_oss_docker/sync/inference3/postprocess_1107/operator_validation_all32_reviewed.json. Complete Point records, source/schema/report/receipt SHA256s, environment/install-log locators, and the source-byte identity checks are retained in local:/workspace/code/gpt_oss_docker/sync/inference3/postprocess_1107/bf16_kernel_kb_mapping.json.
+
+- E218 [2026-11, gfx950, FlyDSL 0.3.2, N=1, local AKLR profile-v18 whole-call] `f39f8ba0861eecef` / `gemm_n64_k4096`: all authored Points accuracy passed; report local:/tmp/inf3_validation_checkpoint_0142/results/g5/bf16_large_f39f8ba0861eecef/validation/report.json; report SHA256 `1586d0a34d0a70b22282f493d3e31a56e141b87e7c70f4d07d81cc841eb4fb01`. Qualification is reconstructed; no incumbent timing.
+- S218 aklr/ops/gemm/impls/flydsl/gemm_n64_k4096/f39f8ba0861eecef.json#kernel.py:21 executable branches; official kernel-content fingerprint `86c2c459e1569e5ab69c7f0ff5927972702fc3545fbe064d075fc1c5005accac`. Untracked at measurement, not source contained in the report head commit.
+
+## large-M implementation evidence
+
+Only the discrete authored/tested Points below are covered; older kernels and results above are unchanged. These are source mechanisms and whole-call representative results, not component ablations or proof of deployment selection. See the [large-M contract, denominator, toolchain, measurement limits, reproduction, and rollback](k3_bf16_band_stream.md#large-m-implementation-evidence). Exact Point records remain in the reports and local mapping cited under Evidence.
+
+### large-M N=64, K=4096
+
+M=256,512,1024 split K over eight waves; M=2048 uses four, with wave-private LDS DMA rings. M=4096 selects `_build_fold`: four-way cross-workgroup split-K, per-call uninitialized workspace, and tagged-counter CAS/atomic add to elect a fold (383–426). Lines 438–446 select and add partials in absolute split-index order: peer loads rotate, but accumulation is not in arrival order. Protocol safety still needs separate validation. This extends the K=4096 mechanism to the exact authored N=64 Points. *(source, S218; embedded `kernel.py` line numbers)*
+
+**Representative result:** M=512 reached 1.528×; M=4096 reached 1.402×. All authored/tested Points for this candidate qualify under the reconstructed default rule; unlisted M values remain untested. *(field, E218)*
