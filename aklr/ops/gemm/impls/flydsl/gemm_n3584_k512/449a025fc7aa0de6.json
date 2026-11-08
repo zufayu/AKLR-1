@@ -1,0 +1,138 @@
+{
+  "schema_version": 5,
+  "name": "gemm_n3584_k512",
+  "contract_id": "gemm@1.0",
+  "description": "16-bit gemm: out = a @ b.T + bias (b is (k, n) unless trans_b).",
+  "op_type": "gemm",
+  "axes": {
+    "m": {
+      "type": "var",
+      "description": "Tokens."
+    },
+    "n": {
+      "type": "const",
+      "value": 3584,
+      "description": "Output columns."
+    },
+    "k": {
+      "type": "const",
+      "value": 512,
+      "description": "Reduction length."
+    }
+  },
+  "attrs": {
+    "trans_b": true,
+    "has_bias": false
+  },
+  "inputs": {
+    "a": {
+      "shape": [
+        "m",
+        "k"
+      ],
+      "dtype": "bfloat16",
+      "distribution": {
+        "kind": "finite"
+      },
+      "description": "Activations."
+    },
+    "b": {
+      "shape": [
+        "n",
+        "k"
+      ],
+      "dtype": "bfloat16",
+      "distribution": {
+        "kind": "finite"
+      },
+      "description": "Weights; (n, k) when trans_b."
+    }
+  },
+  "outputs": {
+    "out": {
+      "shape": [
+        "m",
+        "n"
+      ],
+      "dtype": "bfloat16",
+      "description": "a @ b.T + bias."
+    }
+  },
+  "workloads": [
+    {
+      "axes": {
+        "m": 1
+      }
+    },
+    {
+      "axes": {
+        "m": 2
+      }
+    },
+    {
+      "axes": {
+        "m": 4
+      }
+    },
+    {
+      "axes": {
+        "m": 8
+      }
+    },
+    {
+      "axes": {
+        "m": 16
+      }
+    },
+    {
+      "axes": {
+        "m": 32
+      }
+    },
+    {
+      "axes": {
+        "m": 64
+      }
+    },
+    {
+      "axes": {
+        "m": 128
+      }
+    }
+  ],
+  "layout_variants": {
+    "by_name": {
+      "row_major": {
+        "layouts": {},
+        "detect_facts": [
+          {
+            "location": "tensor_attr",
+            "name": "b.is_shuffled",
+            "expected_value": false
+          }
+        ]
+      }
+    }
+  },
+  "compare": {
+    "max_violation_fraction": 0.0,
+    "determinism": "bitwise",
+    "element_order": "fixed"
+  },
+  "kernel": {
+    "language": "flydsl",
+    "targets": [
+      {
+        "arch": "gfx950",
+        "hardware": "MI355X"
+      }
+    ],
+    "entry_point": "kernel.py::run",
+    "sources": [
+      {
+        "path": "kernel.py",
+        "content": "\"\"\"FlyDSL BF16 GEMM ``out = a @ b.T``: aiter's single-launch FlyDSL HGEMM with a tile shape chosen from ``m``.\n\nEach workgroup walks the whole K (no split-K); A goes through LDS, and B too on the largest-m tile only.\n\"\"\"\n\nimport functools\n\nimport flydsl.expr as fx\nimport torch\nfrom aiter.ops.flydsl.kernels.splitk_hgemm import compile_hgemm_kernel\nfrom aiter.ops.flydsl.kernels.tensor_shim import _run_compiled, ptr_arg\n\n\ndef _config(m):\n    if m <= 16:\n        return dict(TILE_M=16, TILE_N=32, TILE_K=256, BLOCK_M_WARPS=1, BLOCK_N_WARPS=1)\n    if m <= 64:\n        return dict(TILE_M=32, TILE_N=32, TILE_K=256, BLOCK_M_WARPS=1, BLOCK_N_WARPS=2)\n    return dict(TILE_M=32, TILE_N=64, TILE_K=128, BLOCK_M_WARPS=1, BLOCK_N_WARPS=4, STAGES=3, B_TO_LDS=True)\n\n\n@functools.cache\ndef _launch_for(m, n, k):\n    kernel = compile_hgemm_kernel(\"bf16\", n, k, **_config(m))\n\n    def launch(a, b, out):\n        stream = fx.Stream(torch._C._cuda_getCurrentRawStream(a.device.index))\n        pb = ptr_arg(b)\n        # pb also fills the bias, semaphore and signal slots, never read without bias or split-K.\n        _run_compiled(kernel, ptr_arg(out), ptr_arg(a), pb, pb, m, pb, pb, stream)\n\n    return launch\n\n\ndef run(*, a, b, trans_b, bias, out_dtype, out):\n    _launch_for(a.shape[0], b.shape[0], a.shape[1])(a, b, out)\n"
+      }
+    ]
+  }
+}
