@@ -20,6 +20,7 @@ from aklr.core.platform.device import DeviceTarget
 from aklr.core.schema import Schema, load_json_file, save_json_file
 from aklr.core.schema._frozen_model import frozen_dataclass
 from aklr.core.validation.stages import (
+    MEASUREMENT_PROFILE,
     STAGE_ORDER,
     AuditStage,
     BenchReport,
@@ -28,7 +29,6 @@ from aklr.core.validation.stages import (
     Paragraph,
     PipelineStage,
     Progress,
-    RoundTimer,
     StageReport,
     Table,
     ValidationScope,
@@ -68,7 +68,7 @@ class Pipeline:
             return PipelineReport(
                 head_sha=scope.head_sha,
                 base_sha=scope.base_sha,
-                measurement_profile=RoundTimer.profile(),
+                measurement_profile=dict(MEASUREMENT_PROFILE),
                 platform=platform,
                 schema_paths=tuple(map(scope.relative_path, scope.schema_paths)),
                 bench_paths=tuple(map(scope.relative_path, scope.bench_paths)),

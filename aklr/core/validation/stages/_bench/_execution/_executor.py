@@ -10,11 +10,11 @@ import signal
 import threading
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from aklr.core.validation.stages._bench._execution._backend import (
     ExecutionBackend,
-    SubprocessExecutionBackend,
+    RunnerExecutionBackend,
 )
 from aklr.core.validation.stages._bench._execution._engine import ExecutionEngine
 from aklr.core.validation.stages._bench._execution._errors import ExecutorClosed
@@ -29,7 +29,7 @@ from aklr.core.validation.stages._bench._execution._resources import (
 )
 from aklr.core.validation.stages._bench._execution._runner import (
     DEFAULT_STARTUP_TIMEOUT_SECONDS,
-    DisposableRunnerFactory,
+    RunnerFactory,
 )
 from aklr.core.validation.stages._bench._execution._shutdown import ShutdownGate
 
@@ -38,7 +38,8 @@ if TYPE_CHECKING:
 
 
 class Executor:
-    def __init__(self, backend: ExecutionBackend) -> None:
+    def __init__(self, backend: ExecutionBackend, *, resources_per_runner: int = 1) -> None:
+        self._resource_request = ResourceRequest(count=resources_per_runner)
         self._backend = backend
         self._state = ExecutorState.OPEN
         self._state_lock = threading.Lock()
@@ -50,20 +51,26 @@ class Executor:
         cls,
         devices: Sequence[str],
         *,
+        runner: Literal["process", "thread"] = "process",
+        resources_per_runner: int = 1,
         startup_timeout_seconds: float = DEFAULT_STARTUP_TIMEOUT_SECONDS,
     ) -> Executor:
-        """An executor that runs each task in a fresh child process, one task per device at a time."""
+        """Run each task in a process or thread with an exclusive lease of one or more devices."""
+        ResourceRequest(count=resources_per_runner)
         # the catalog first: a bad device raises before the job directory exists
         resources = LocalAcceleratorCatalog(devices)
+        if resources_per_runner > len(resources):
+            raise ValueError("resources_per_runner exceeds the available device count")
         return cls(
-            SubprocessExecutionBackend(
+            RunnerExecutionBackend(
                 resources=resources,
-                runner_factory=DisposableRunnerFactory(
-                    n_resources=len(devices),
+                runner_factory=RunnerFactory(
+                    runner=runner,
                     startup_timeout_seconds=startup_timeout_seconds,
                 ),
                 engine=ExecutionEngine(),
-            )
+            ),
+            resources_per_runner=resources_per_runner,
         )
 
     @property
@@ -81,13 +88,13 @@ class Executor:
         metadata: Mapping[str, str] | None = None,
         **kwargs: Any,
     ) -> ExecutionFuture[Any]:
-        """Runs ``fn(context, **kwargs)`` in a child; ``fn`` and kwargs go pickled, the result as JSON."""
+        """Run fn(context, **kwargs); an explicit resource request overrides the executor default."""
         task = ExecutionTask(
             call=fn,
             kwargs=kwargs,
             timeout_seconds=timeout_seconds,
             task_id=uuid.uuid4().hex,
-            resource_request=resource_request or ResourceRequest(),
+            resource_request=resource_request or self._resource_request,
             metadata=metadata or {},
         )
         with self._state_lock:

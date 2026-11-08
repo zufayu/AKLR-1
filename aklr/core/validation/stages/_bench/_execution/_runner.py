@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import itertools
 import logging
 import multiprocessing
 import multiprocessing.connection
@@ -20,7 +19,7 @@ import traceback
 import uuid
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from aklr.core.validation.stages._bench._execution._engine import ExecutionEngine
 from aklr.core.validation.stages._bench._execution._errors import (
@@ -64,7 +63,7 @@ RUNNER_JOIN_SECONDS: Final = 2.0
 
 
 class ExecutionRunner(ABC):
-    """Starts a leased task, executes it synchronously, and closes its process."""
+    """Runs one task with an exclusive lease and waits for cleanup before releasing it."""
 
     @property
     @abstractmethod
@@ -78,6 +77,10 @@ class ExecutionRunner(ABC):
     @abstractmethod
     def directory(self) -> Path: ...
 
+    @property
+    @abstractmethod
+    def devices(self) -> tuple[str, ...]: ...
+
     @abstractmethod
     def start(self) -> None: ...
 
@@ -89,7 +92,7 @@ class ExecutionRunner(ABC):
 
     @abstractmethod
     def close(self) -> None:
-        """Reap the process; concurrent callers must all wait until cleanup finishes."""
+        """Wait for execution to end; concurrent callers all wait until cleanup finishes."""
 
     def diagnostics(self) -> str | None:
         return None
@@ -103,13 +106,11 @@ class DisposableExecutionRunner(ExecutionRunner):
         lease: ResourceLease,
         engine: ExecutionEngine,
         directory: Path,
-        n_resources: int,
         startup_timeout_seconds: float = DEFAULT_STARTUP_TIMEOUT_SECONDS,
     ) -> None:
         self._lease = lease
         self._engine = engine
         self._directory = directory
-        self._n_resources = n_resources
         self._startup_timeout_seconds = startup_timeout_seconds
         self._runner_id = uuid.uuid4().hex
         self._state = RunnerState.CREATED
@@ -132,13 +133,17 @@ class DisposableExecutionRunner(ExecutionRunner):
     def directory(self) -> Path:
         return self._directory
 
+    @property
+    def devices(self) -> tuple[str, ...]:
+        return self._lease.devices
+
     def start(self) -> None:
         with self._state_lock:
             if self._state != RunnerState.CREATED:
                 raise InvalidRunnerState(f"runner {self._runner_id} is {self._state.value}, expected created")
             self._state = RunnerState.STARTING
 
-        if self._lease.resource.device != "cpu":
+        if any(device != "cpu" for device in self.devices):
             from aklr.core.utils.testing import kernel_tracer
 
             kernel_tracer()  # built here, outside the child's startup timeout
@@ -150,10 +155,9 @@ class DisposableExecutionRunner(ExecutionRunner):
             args=(
                 child_endpoint,
                 self._runner_id,
-                self._lease.resource.device,
+                self.devices,
                 self._engine,
                 self._directory,
-                self._n_resources,
             ),
             daemon=False,
         )
@@ -361,13 +365,13 @@ class DisposableExecutionRunner(ExecutionRunner):
     def _run_child(
         endpoint: ChildRunnerEndpoint,
         runner_id: str,
-        device: str,
+        devices: tuple[str, ...],
         engine: ExecutionEngine,
         directory: Path,
-        n_resources: int,
     ) -> None:
         task_id: str | None = None
-        is_gpu = device != "cpu"
+        device = devices[0]
+        is_gpu = any(device != "cpu" for device in devices)
         try:
             os.setsid()  # its pid becomes a group id: the parent kills the group, subprocesses included
             os.chdir(directory)
@@ -376,13 +380,13 @@ class DisposableExecutionRunner(ExecutionRunner):
                 try:
                     import torch
 
-                    torch.set_num_threads(max(1, (os.cpu_count() or 1) // max(1, n_resources)))
                     if is_gpu:
                         from aklr.core.utils.testing import kernel_tracer
 
                         # rocprofiler-sdk takes the timer's kernel tracer only before the first GPU call
                         kernel_tracer().configure()
-                        torch.cuda.set_device(device)
+                        if device != "cpu":
+                            torch.cuda.set_device(device)
                     endpoint.send(RunnerStarted(runner_id=runner_id))
 
                     command = endpoint.receive()
@@ -395,7 +399,7 @@ class DisposableExecutionRunner(ExecutionRunner):
                     result = engine.execute(
                         command.task,
                         ExecutionContext(
-                            device=device,
+                            devices=devices,
                             log_path=task_log.path,
                             directory=directory,
                         ),
@@ -430,44 +434,152 @@ class DisposableExecutionRunner(ExecutionRunner):
                 pass
 
 
-class RunnerFactory(ABC):
-    @abstractmethod
-    def create(
-        self,
-        lease: ResourceLease,
-        engine: ExecutionEngine,
-    ) -> ExecutionRunner: ...
+class ThreadExecutionRunner(ExecutionRunner):
+    """Runs on a shared thread; cancellation waits for the callable and its GPU work to end."""
 
-    @abstractmethod
-    def close(self) -> None: ...
+    def __init__(self, lease: ResourceLease, engine: ExecutionEngine, directory: Path) -> None:
+        self._lease = lease
+        self._engine = engine
+        self._directory = directory
+        self._runner_id = uuid.uuid4().hex
+        self._state = RunnerState.CREATED
+        self._health = RunnerHealth.HEALTHY
+        self._lock = threading.Lock()
+        self._cancel = threading.Event()
+        self._done = threading.Event()
+        self._done.set()
+
+    @property
+    def runner_id(self) -> str:
+        return self._runner_id
+
+    @property
+    def state(self) -> RunnerState:
+        with self._lock:
+            return self._state
+
+    @property
+    def directory(self) -> Path:
+        return self._directory
+
+    @property
+    def devices(self) -> tuple[str, ...]:
+        return self._lease.devices
+
+    def start(self) -> None:
+        with self._lock:
+            if self._state == RunnerState.CLOSED:
+                raise TaskCancelled(f"runner {self.runner_id} was closed while starting")
+            if self._state != RunnerState.CREATED:
+                raise InvalidRunnerState(f"runner {self.runner_id} is {self._state.value}, expected created")
+            self._state = RunnerState.READY
+
+    def execute(self, task: ExecutionTask) -> Any:
+        if task.task_id != self._lease.task_id:
+            raise InvalidRunnerState(f"task {task.task_id} does not own lease {self._lease.lease_id}")
+        deadline = time.monotonic() + task.timeout_seconds
+        timer = threading.Timer(task.timeout_seconds, self._cancel.set)
+        timer.daemon = True
+        with self._lock:
+            if self._state == RunnerState.CLOSED:
+                raise TaskCancelled(f"task {task.task_id} was cancelled")
+            if self._state != RunnerState.READY:
+                raise InvalidRunnerState(f"runner {self.runner_id} is {self._state.value}, expected ready")
+            self._state = RunnerState.RUNNING
+            self._done.clear()
+        error = None
+        result = None
+        try:
+            timer.start()
+            context = ExecutionContext(
+                devices=self.devices,
+                directory=self.directory,
+                log_path=self.directory / "task.log",
+                cancel_event=self._cancel,
+            )
+            try:
+                if not self._cancel.is_set():
+                    result = self._execute_call(task, context)
+            except BaseException as caught:  # noqa: BLE001
+                error = caught
+                with context.log_path.open("a") as log:
+                    traceback.print_exc(file=log)
+            if self.state == RunnerState.CLOSED:
+                raise TaskCancelled(f"task {task.task_id} was cancelled")
+            if time.monotonic() >= deadline:
+                raise TaskExecutionTimeout(f"task {task.task_id} exceeded {task.timeout_seconds} seconds")
+            if error is not None:
+                raise TaskExecutionFailed(f"{type(error).__name__}: {error}") from error
+            return result
+        except BaseException:  # noqa: BLE001
+            with self._lock:
+                if self._state != RunnerState.CLOSED:
+                    self._state = RunnerState.FAILED
+                if self._health == RunnerHealth.HEALTHY:
+                    self._health = RunnerHealth.FAILED
+            raise
+        finally:
+            timer.cancel()
+            self._done.set()
+
+    def _execute_call(self, task: ExecutionTask, context: ExecutionContext) -> Any:
+        gpu_devices = [device for device in self.devices if device != "cpu"]
+        if not gpu_devices:
+            return self._engine.execute(task, context)
+
+        import torch
+
+        try:
+            with torch.cuda.device(gpu_devices[0]):
+                return self._engine.execute(task, context)
+        finally:
+            # Drain every leased GPU before reuse; failed synchronization quarantines the lease.
+            for device in gpu_devices:
+                try:
+                    torch.cuda.synchronize(device)
+                except BaseException:  # noqa: BLE001
+                    with self._lock:
+                        self._health = RunnerHealth.RESOURCE_FAILED
+                    raise
+
+    def health(self) -> RunnerHealth:
+        with self._lock:
+            return self._health
+
+    def close(self) -> None:
+        with self._lock:
+            self._state = RunnerState.CLOSED
+            self._cancel.set()
+        self._done.wait()
+
+    def diagnostics(self) -> str | None:
+        return TaskLog(self.directory / "task.log").tail() or None
 
 
-class DisposableRunnerFactory(RunnerFactory):
+class RunnerFactory:
+    """Creates process or thread runners and owns their task directories."""
+
     def __init__(
         self,
-        n_resources: int,
+        *,
+        runner: Literal["process", "thread"] = "process",
         startup_timeout_seconds: float = DEFAULT_STARTUP_TIMEOUT_SECONDS,
     ) -> None:
-        self._n_resources = n_resources
+        if runner not in {"process", "thread"}:
+            raise ValueError(f"unknown runner: {runner!r}")
+        self._runner = runner
         self._startup_timeout_seconds = startup_timeout_seconds
         self._job_dir = Path(tempfile.mkdtemp(prefix="aklr-validation-"))
-        self._task_numbers = itertools.count()
-        self._lock = threading.Lock()
 
-    def create(
-        self,
-        lease: ResourceLease,
-        engine: ExecutionEngine,
-    ) -> ExecutionRunner:
-        with self._lock:
-            task_number = next(self._task_numbers)
-        directory = self._job_dir / f"{task_number}-{lease.resource.resource_id.replace(':', '-')}"
+    def create(self, lease: ResourceLease, engine: ExecutionEngine) -> ExecutionRunner:
+        directory = self._job_dir / lease.lease_id
         directory.mkdir()
+        if self._runner == "thread":
+            return ThreadExecutionRunner(lease, engine, directory)
         return DisposableExecutionRunner(
             lease=lease,
             engine=engine,
             directory=directory,
-            n_resources=self._n_resources,
             startup_timeout_seconds=self._startup_timeout_seconds,
         )
 

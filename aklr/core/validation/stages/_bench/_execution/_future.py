@@ -65,8 +65,8 @@ class ExecutionFuture(Future, Generic[T]):
         super().__init__()
         self._task_id = task_id
         self._task_state = TaskState.PENDING
-        self._resource_id: str | None = None
-        self._device: str | None = None
+        self._resource_ids: tuple[str, ...] = ()
+        self._devices: tuple[str, ...] = ()
         self._directory: Path | None = None
         self._metadata_lock = threading.RLock()
 
@@ -89,24 +89,34 @@ class ExecutionFuture(Future, Generic[T]):
     @property
     def resource_id(self) -> str | None:
         with self._metadata_lock:
-            return self._resource_id
+            return self._resource_ids[0] if self._resource_ids else None
 
     @property
     def device(self) -> str | None:
         with self._metadata_lock:
-            return self._device
+            return self._devices[0] if self._devices else None
+
+    @property
+    def resource_ids(self) -> tuple[str, ...]:
+        with self._metadata_lock:
+            return self._resource_ids
+
+    @property
+    def devices(self) -> tuple[str, ...]:
+        with self._metadata_lock:
+            return self._devices
 
     @property
     def directory(self) -> Path | None:
         with self._metadata_lock:
             return self._directory
 
-    def assign(self, resource_id: str, device: str) -> bool:
+    def assign(self, resource_ids: tuple[str, ...] | str, devices: tuple[str, ...] | str) -> bool:
         with self._metadata_lock:
             if self.done():
                 return False
-            self._resource_id = resource_id
-            self._device = device
+            self._resource_ids = (resource_ids,) if isinstance(resource_ids, str) else resource_ids
+            self._devices = (devices,) if isinstance(devices, str) else devices
             self._task_state = TaskState.ASSIGNED
         return True
 

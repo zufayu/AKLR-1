@@ -81,7 +81,7 @@ class StepFailed(Exception):
 
 
 def run_candidate(context: ExecutionContext, *, requests: Sequence[TrialRequest]) -> dict:
-    """Check and time the batch on ``context.device``; returns a ``CandidateResult`` json."""
+    """Check and time the batch on ``context.devices[0]``; returns a ``CandidateResult`` json."""
     import torch
     from safetensors.torch import save_file
 
@@ -95,17 +95,17 @@ def run_candidate(context: ExecutionContext, *, requests: Sequence[TrialRequest]
     baselines: dict[str, tuple[str, str] | None] = {}
     runnable = None
     incumbent_runnables: dict[str, Runnable] = {}
-    target = DeviceTarget.current(context.device)
+    target = DeviceTarget.current(context.devices[0])
     try:
         if not target.is_complete:
-            detail = f"{context.device}: unknown arch or hardware ({target})"
+            detail = f"{context.devices[0]}: unknown arch or hardware ({target})"
             raise StepFailed(FindingCode.PLATFORM_FAILURE, detail)
         if not schema.kernel.build.runs_on(target):
             detail = f"{target} matches no kernel.build.target_hardware"
             raise StepFailed(FindingCode.NO_MATCHING_DEVICE, detail)
         with StepFailed.failing_as(FindingCode.PLATFORM_FAILURE, "compile tripwire: "):
             tripwire = _CompileTripwire.resolve()
-        run = CandidateRun(context.device, tripwire, _measure.bind_clock())
+        run = CandidateRun(context.devices[0], tripwire, _measure.bind_clock())
         flush_l2_cache()
         run.clock.synchronize()
         for request in requests:

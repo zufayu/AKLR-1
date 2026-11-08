@@ -60,7 +60,7 @@ def run_reference(
     directory_descriptor = os.open(candidate_dir, flags)
     try:
         workload_results = tuple(
-            WorkloadEvaluation(request, directory_descriptor, context.device).evaluate()
+            WorkloadEvaluation(request, directory_descriptor, context.devices[0]).evaluate()
             for request in requests
         )
     finally:

@@ -10,6 +10,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from threading import Event
 from typing import Any
 
 
@@ -61,10 +62,15 @@ class ResourceCapabilities:
 
 @dataclass(frozen=True)
 class ResourceRequest:
-    """Which resources a task may run on; an empty field allows any."""
+    """Lease ``count`` resources from the allowed IDs/backend; empty filters allow any."""
 
     resource_ids: tuple[str, ...] = ()
     backend: str | None = None
+    count: int = 1
+
+    def __post_init__(self) -> None:
+        if type(self.count) is not int or self.count < 1:
+            raise ValueError("resource count must be a positive integer")
 
 
 @dataclass(frozen=True)
@@ -88,8 +94,13 @@ class ExecutionTask:
 
 @dataclass(frozen=True, kw_only=True)
 class ExecutionContext:
-    """What the runner's child process hands the task's callable as its first argument."""
+    """Leased devices and task files, with cooperative cancellation for thread runners."""
 
-    device: str
     log_path: Path
     directory: Path
+    devices: tuple[str, ...]  # Leased devices in rank order; the task initializes communication.
+    cancel_event: Event | None = field(default=None, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if not self.devices:
+            raise ValueError("execution context requires at least one device")

@@ -206,7 +206,7 @@ class RunnerSupervisor:
         return ExecutionError(detail)
 
 
-class SubprocessExecutionBackend(ExecutionBackend):
+class RunnerExecutionBackend(ExecutionBackend):
     """Connects the scheduler to runner supervision and closes them in dependency order."""
 
     def __init__(

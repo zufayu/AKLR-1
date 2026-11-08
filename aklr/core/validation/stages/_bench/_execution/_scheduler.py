@@ -40,7 +40,7 @@ class SchedulingStrategy(ABC):
         self,
         task: ExecutionTask,
         candidates: Sequence[ResourceSnapshot],
-    ) -> ResourceSnapshot | None: ...
+    ) -> tuple[ResourceSnapshot, ...] | None: ...
 
 
 class RoundRobinStrategy(SchedulingStrategy):
@@ -52,14 +52,14 @@ class RoundRobinStrategy(SchedulingStrategy):
         self,
         task: ExecutionTask,
         candidates: Sequence[ResourceSnapshot],
-    ) -> ResourceSnapshot | None:
-        del task
-        if not candidates:
+    ) -> tuple[ResourceSnapshot, ...] | None:
+        count = task.resource_request.count
+        if len(candidates) < count:
             return None
         with self._lock:
             ordered = sorted(candidates, key=lambda candidate: candidate.resource_id)
-            choice = ordered[self._next_index % len(ordered)]
-            self._next_index += 1
+            choice = tuple(ordered[(self._next_index + i) % len(ordered)] for i in range(count))
+            self._next_index += count
             return choice
 
 
@@ -95,9 +95,11 @@ class ExecutionScheduler:
             if task.task_id in self._known_task_ids:
                 future.set_exception(SubmissionRejected(f"task id '{task.task_id}' is already active"))
                 return future
-            if not self._resources.matching(task.resource_request):
+            if len(self._resources.matching(task.resource_request)) < task.resource_request.count:
                 future.set_exception(
-                    NoResourceAvailable(f"no execution resource satisfies task {task.task_id}")
+                    NoResourceAvailable(
+                        f"cannot supply {task.resource_request.count} resources for task {task.task_id}"
+                    )
                 )
                 return future
             self._known_task_ids.add(task.task_id)
@@ -112,7 +114,7 @@ class ExecutionScheduler:
             if (
                 not self._accepting
                 or task.task_id in self._known_task_ids
-                or not self._resources.matching(task.resource_request)
+                or len(self._resources.matching(task.resource_request)) < task.resource_request.count
             ):
                 return False
             self._known_task_ids.add(task.task_id)
@@ -188,21 +190,29 @@ class ExecutionScheduler:
             lease = None
             try:
                 matching = self._resources.matching(task.resource_request)
-                if not matching:
+                if len(matching) < task.resource_request.count:
                     self._pending.pop(task.task_id)
                     self._known_task_ids.discard(task.task_id)
                     return None, (
                         future,
-                        NoResourceAvailable(f"no healthy execution resource satisfies task {task.task_id}"),
+                        NoResourceAvailable(f"not enough healthy resources for task {task.task_id}"),
                     )
                 candidates = [resource for resource in matching if resource.state == ResourceState.AVAILABLE]
                 selected = self._strategy.choose(task, candidates)
                 if selected is None:
                     continue
-                lease = self._resources.acquire(selected.resource_id, task.task_id)
+                selected_ids = tuple(resource.resource_id for resource in selected)
+                allowed_ids = {resource.resource_id for resource in candidates}
+                if (
+                    len(selected_ids) != task.resource_request.count
+                    or len(set(selected_ids)) != len(selected_ids)
+                    or not set(selected_ids) <= allowed_ids
+                ):
+                    raise ValueError("scheduling strategy returned an invalid resource group")
+                lease = self._resources.acquire(selected_ids, task.task_id)
                 if lease is None:
                     continue
-                if not future.assign(selected.resource_id, selected.device):
+                if not future.assign(selected_ids, lease.devices):
                     self._resources.release(lease, ResourceHealth.HEALTHY)
                     self._pending.pop(task.task_id)
                     self._known_task_ids.discard(task.task_id)

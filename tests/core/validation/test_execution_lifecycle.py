@@ -24,7 +24,7 @@ from aklr.core.validation.stages._bench._execution import (
     TaskExecutionTimeout,
     TaskState,
 )
-from aklr.core.validation.stages._bench._execution._backend import SubprocessExecutionBackend
+from aklr.core.validation.stages._bench._execution._backend import RunnerExecutionBackend
 from aklr.core.validation.stages._bench._execution._engine import ExecutionEngine
 from aklr.core.validation.stages._bench._execution._model import ResourceHealth, ResourceState, RunnerHealth
 from aklr.core.validation.stages._bench._execution._resources import LocalAcceleratorCatalog
@@ -38,7 +38,7 @@ from aklr.core.validation.stages._bench._execution._shutdown import ShutdownGate
 
 def _describe(context: ExecutionContext, value: int = 7) -> dict:
     (context.directory / "evidence").write_text(str(value))
-    return {"pid": os.getpid(), "device": context.device, "cwd": os.getcwd(), "value": value}
+    return {"pid": os.getpid(), "device": context.devices[0], "cwd": os.getcwd(), "value": value}
 
 
 def _fail(context: ExecutionContext) -> None:
@@ -66,7 +66,7 @@ def _runner(tmp_path: Path, name: str) -> Mock:
 def _executor(resources: LocalAcceleratorCatalog, runners: list[Mock]) -> Executor:
     factory = Mock(spec=RunnerFactory)
     factory.create.side_effect = runners
-    return Executor(SubprocessExecutionBackend(resources, factory, ExecutionEngine()))
+    return Executor(RunnerExecutionBackend(resources, factory, ExecutionEngine()))
 
 
 class TestExecutionFuture:
@@ -130,6 +130,28 @@ class TestShutdownGate:
 
 
 class TestSchedulingLifecycle:
+    @pytest.mark.parametrize("capacity", [3, 4])
+    def test_group_startup_retries_only_if_a_whole_healthy_group_remains(
+        self, tmp_path: Path, capacity: int
+    ) -> None:
+        resources = LocalAcceleratorCatalog([f"cuda:{i}" for i in range(capacity)])
+        failed, replacement = [_runner(tmp_path, str(i)) for i in range(2)]
+        failed.start.side_effect = RunnerStartupFailed("group unavailable")
+        failed.health.return_value = RunnerHealth.RESOURCE_FAILED
+        with _executor(resources, [failed, replacement]) as executor:
+            future = executor.submit(_describe, timeout_seconds=1, resource_request=ResourceRequest(count=2))
+            if capacity == 4:
+                assert future.result(timeout=5) == "ok"
+                assert future.devices == ("cuda:2", "cuda:3")
+                replacement.close.assert_called_once()
+            else:
+                with pytest.raises(RunnerStartupFailed, match="group unavailable"):
+                    future.result(timeout=5)
+                replacement.start.assert_not_called()
+            assert len(resources.matching(ResourceRequest())) == capacity - 2
+            assert all(r.state == ResourceState.AVAILABLE for r in resources.matching(ResourceRequest()))
+            failed.close.assert_called_once()
+
     @pytest.mark.parametrize("failures", [1, 2])
     def test_startup_retries_once_on_a_different_healthy_resource(
         self, tmp_path: Path, failures: int
@@ -258,7 +280,7 @@ class TestSpawnedExecution:
         resources = LocalAcceleratorCatalog(["cpu"])
         (resource,) = resources.matching(ResourceRequest())
         lease = resources.acquire(resource.resource_id, "task")
-        runner = DisposableExecutionRunner(lease, ExecutionEngine(), tmp_path, 1)
+        runner = DisposableExecutionRunner(lease, ExecutionEngine(), tmp_path)
         creating = threading.Event()
         release = threading.Event()
         channel, endpoint = Mock(), Mock()

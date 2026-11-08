@@ -47,7 +47,15 @@ class AcceleratorResource:
 class ResourceLease:
     lease_id: str
     task_id: str
-    resource: ResourceSnapshot
+    resources: tuple[ResourceSnapshot, ...]
+
+    @property
+    def resource(self) -> ResourceSnapshot:
+        return self.resources[0]
+
+    @property
+    def devices(self) -> tuple[str, ...]:
+        return tuple(resource.device for resource in self.resources)
 
 
 class ResourceCatalog(ABC):
@@ -61,7 +69,8 @@ class ResourceCatalog(ABC):
         """Snapshot healthy matching resources, including those already leased."""
 
     @abstractmethod
-    def acquire(self, resource_id: str, task_id: str) -> ResourceLease | None: ...
+    def acquire(self, resource_ids: Sequence[str] | str, task_id: str) -> ResourceLease | None:
+        """Atomically lease all requested resources, or leave every resource untouched."""
 
     @abstractmethod
     def release(self, lease: ResourceLease, health: ResourceHealth) -> None: ...
@@ -73,6 +82,9 @@ class LocalAcceleratorCatalog(ResourceCatalog):
             raise ValueError("no device to run on")
         if invalid := [d for d in devices if not re.fullmatch(r"cpu|cuda:\d+", d)]:
             raise ValueError(f"not 'cpu' or 'cuda:<n>': {invalid}")
+        gpu_ids = [int(device.partition(":")[2]) for device in devices if device != "cpu"]
+        if len(set(gpu_ids)) != len(gpu_ids):
+            raise ValueError("GPU devices must be distinct")
         self._resources: dict[str, AcceleratorResource] = {
             f"{index}:{device}": AcceleratorResource(
                 resource_id=f"{index}:{device}",
@@ -95,28 +107,34 @@ class LocalAcceleratorCatalog(ResourceCatalog):
                 if resource.matches(request) and resource.state != ResourceState.UNHEALTHY
             )
 
-    def acquire(self, resource_id: str, task_id: str) -> ResourceLease | None:
+    def acquire(self, resource_ids: Sequence[str] | str, task_id: str) -> ResourceLease | None:
+        resource_ids = (resource_ids,) if isinstance(resource_ids, str) else tuple(resource_ids)
+        if not resource_ids or len(set(resource_ids)) != len(resource_ids):
+            raise ValueError("a lease requires distinct resource IDs")
         with self._lock:
-            resource = self._resources.get(resource_id)
-            if resource is None or resource.state != ResourceState.AVAILABLE:
+            resources = [self._resources.get(resource_id) for resource_id in resource_ids]
+            if any(resource is None or resource.state != ResourceState.AVAILABLE for resource in resources):
                 return None
-            resource.state = ResourceState.LEASED
+            lease_id = uuid.uuid4().hex
+            for resource in resources:
+                resource.state = ResourceState.LEASED
+                self._lease_id_by_resource[resource.resource_id] = lease_id
             lease = ResourceLease(
-                lease_id=uuid.uuid4().hex,
+                lease_id=lease_id,
                 task_id=task_id,
-                resource=resource.snapshot(),
+                resources=tuple(resource.snapshot() for resource in resources),
             )
-            self._lease_id_by_resource[resource_id] = lease.lease_id
             return lease
 
     def release(self, lease: ResourceLease, health: ResourceHealth) -> None:
         with self._lock:
-            resource = self._resources.get(lease.resource.resource_id)
-            current_lease_id = self._lease_id_by_resource.get(lease.resource.resource_id)
-            if resource is None or current_lease_id != lease.lease_id:
-                return
-            self._lease_id_by_resource.pop(lease.resource.resource_id, None)
-            if health == ResourceHealth.UNHEALTHY:
-                resource.state = ResourceState.UNHEALTHY
-            elif resource.state == ResourceState.LEASED:
-                resource.state = ResourceState.AVAILABLE
+            for snapshot in lease.resources:
+                resource = self._resources.get(snapshot.resource_id)
+                current_lease_id = self._lease_id_by_resource.get(snapshot.resource_id)
+                if resource is None or current_lease_id != lease.lease_id:
+                    continue
+                self._lease_id_by_resource.pop(snapshot.resource_id, None)
+                if health == ResourceHealth.UNHEALTHY:
+                    resource.state = ResourceState.UNHEALTHY
+                elif resource.state == ResourceState.LEASED:
+                    resource.state = ResourceState.AVAILABLE
